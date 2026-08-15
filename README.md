@@ -110,7 +110,7 @@ v1 增件拆分（按依赖排序，每步独立可验）：
 
 1. ✅ **本版**：协议/分诊/卡片/审批纯模块 + 宿主接线 + 33 用例。
 2. **真实联通自证**：同一天与真 WPS 租户 + 真 LLM profile 合跑文本问答、进度卡片、限时窗三条主场景。
-   - **首帧抓包**：✅ ① @bot 群消息 `mentions[].id` 是下标串（`"1"`），真命中在 `mentions[].identity.id == spId`（另有 `<at id>N 展示名</at>` 字面兜底）；② bot 自发消息 `sender.type == "sp"`、`sender.id == spId`（`SELF_TYPES` 已含），卡片类自发消息 `content` 为 `null`——三样均来自真帧，已固化进 `test/protocol.test.ts` 的 `REAL_FRAMES`。
+   - **首帧抓包**：✅ ① @bot 群消息 `mentions[].id` 是下标串（`"1"`），真命中在 `mentions[].identity.id == spId`（另有 `<at id>N 展示名</at>` 字面兜底）；② bot 自发消息 `sender.type == "sp"`、`sender.id == spId`（`SELF_TYPES` 已含），卡片类自发消息 `content` 为 `null`——三样均来自真帧，已固化进 `test/protocol.test.ts` 的 `REAL_FRAMES`；③ **WS 投递面**：群聊帧只在消息 @bot 时下发——实测同群同时段，@bot 文本帧到达（16:41:58.772 → .470Z 收到），两条不带 @ 的 image/file 消息（16:42:02/16:42:12）SDK Debug 面连 `Received event` 都没有（服务端未推，REST 历史可见）。推论：dispatch 的「群非 @ 证据/闲聊」分支在 WS-only 部署是平台性死路（GA 同桥同限制，非本仓缺陷）；附件触达 bot 的唯一入路是**发消息时顺带 @bot**。
 3. **v1 增件**：GA 完整 content 节点集灌贯（含媒体字节下载与多模态透传，见「模态」一节）、历史回放、Docs/Sheets MCP 似真、`dsh-gate-kubectl` 同合。
 
 ## 许可证
