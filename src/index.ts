@@ -45,6 +45,7 @@ export interface WpsBotConfig {
   workspaceRoot?: string;
   seenEventsPath?: string;
   personaTitle?: string;
+  botDisplayName?: string;
   cardMode?: string;
   cardInitialDelaySeconds?: number;
   cardHeartbeatSeconds?: number;
@@ -69,6 +70,8 @@ export const Config: Schema<WpsBotConfig> = Schema.object({
   workspaceRoot: Schema.string().default(""),
   seenEventsPath: Schema.string().default("runtime/wps-bot-seen-events.jsonl"),
   personaTitle: Schema.string().default("甘小雨"),
+  /** @bot 验真名（默认值按 WPS 租户侧的统一对名入口） */
+  botDisplayName: Schema.string().default("甘小雨"),
   cardMode: Schema.string().default("card"),
   cardInitialDelaySeconds: Schema.number().default(5),
   cardHeartbeatSeconds: Schema.number().default(120),
@@ -351,7 +354,7 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
         if (isSelfEvent(sender, botIds)) return;
         const record = event as Record<string, unknown> | undefined;
         const eventId = String(record?.eventId ?? record?.id ?? record?.uuid ?? "");
-        const payload = normalizeEventData(data, botIds, eventId);
+        const payload = normalizeEventData(data, botIds, eventId, config.botDisplayName ?? "甘小雨");
         if (!payload) return;
         await onWpsEvent(payload);
       },

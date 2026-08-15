@@ -34,6 +34,9 @@ export const GENERATED = /(^|\/)(package-lock\.json|pnpm-lock\.yaml|yarn\.lock)$
 /** 不计入测量的 tracked 文件（门禁基线自引用 + 纯仓库仪式件）。 */
 export const EXCLUDED_NAMES = new Set(['.gitignore', 'scripts/token-baseline.json'])
 
+/** 整段划在预算面外的前缀：rounds/ 过程文档天然单调增长，入 ratchet 会恒红（ksbot-dsh EXCLUDED_PREFIXES 同款教训）。 */
+export const EXCLUDED_PREFIXES = ['rounds/']
+
 /** 本仓布局的四分类：每文件恰好一个 bucket。 */
 export function categoryOf(rel) {
   if (rel.startsWith('src/')) return 'source'
@@ -53,7 +56,9 @@ export function isBinary(buffer) {
 /** 对某个仓库根做一次全量测量（默认 cwd）。 */
 export function survey(root = process.cwd()) {
   const listed = execFileSync('git', ['ls-files', '-z'], { encoding: 'utf8', cwd: root })
-  const paths = listed.split('\0').filter(rel => rel.length > 0 && !EXCLUDED_NAMES.has(rel))
+  const paths = listed
+    .split('\0')
+    .filter(rel => rel.length > 0 && !EXCLUDED_NAMES.has(rel) && !EXCLUDED_PREFIXES.some(p => rel.startsWith(p)))
 
   const enc = getEncoding('cl100k_base')
   const files = []
