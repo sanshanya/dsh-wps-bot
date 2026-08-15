@@ -65,7 +65,9 @@ export WPS365_SP_ID=...
 npm test
 ```
 
-59 个用例（签名 / 分段 / 同意 / 幂等 / 协议 / 分发 / 卡片 / 宿主无关核心全链路 + 宿主接线纯函数 + cordis E2E 4 例 + client 出站 wire 面 5 例），全部为纯 `node --test` + 假实现替身，运行不需要 WPS 凭据。与真实 WPS 租户的真实联通验证属于产品发布通路（roadmap 第 3 项）。
+73 个用例（签名 / 分段 / 同意 / 幂等 / 协议 / 分发 / 卡片 / 宿主无关核心全链路 19 例 + 宿主接线纯函数 + cordis E2E + client 出站 wire 面），全部为纯 `node --test` + 假实现替身，运行不需要 WPS 凭据。协议层带**真机 REST 历史帧 regression fixture**（sp 自答 text/card、image `storage_key`、file.local、`@bot` identity 命中），防止 wire 面解析悄悄漂移。与真实 WPS 租户的真实联通验证属于产品发布通路（roadmap 第 2 项）。
+
+`node --test` 依赖 Node ≥ 22.6 的 type stripping；`npm run typecheck`（`tsc --noEmit` strict）须 0 错。协议解析的权威顺序在 src/protocol.ts 头注：**真机帧 > GA `protocol.py:132-370` > wps-docs 官方文档 > open-event-sdk `.d.ts`**——`.d.ts` 曾在 `content.text` 键型上说错话（真机是对象不是字符串），只当线索不当真值。
 
 ## Token 预算
 
@@ -81,15 +83,15 @@ npm run budget:tokens   # 门禁（超基线任一 bucket 或 total → exit 1�
 ## 分层
 
 - **纯模块**（无 dsh 依赖，假件可测）：`signature.ts` / `split.ts` / `consent.ts` / `dedup.ts` / `protocol.ts` / `client.ts`（假 fetch）/ `dispatch.ts` / `card.ts`（假 client）
-- **宿主无关核心**：`bot.ts`（`WpsBotCore`：事件入口/审批答允/会话事件分流/回包），全部由假实现驱动测 9 用例
+- **宿主无关核心**：`bot.ts`（`WpsBotCore`：事件入口/审批答允/会话事件分流/回包），全部由假实现驱动测 19 用例
 - **宿主边界**：`index.ts` 只做 cordis 接线（open-event-sdk 长连接、`ctx.agents.create`、`session/event` 订阅、`approval/request` prepend waterfall、`dispose` 纪律）
 
 ## Roadmap（先打通产品闭环，再做抛光）
 
 1. ✅ **本版**：协议/分诊/卡片/审批纯模块 + 宿主接线 + 33 用例。
 2. **真实联通自证**：同一天与真 WPS 租户 + 真 LLM profile 合跑文本问答、进度卡片、限时窗三条主场景。
-   - **首帧抓包（必做）**：① @bot 群消息的 `mentions[]` 载荷（确认 `id` == `spId`/`clientId` 命中哪一只）；② bot 自发出消息的 `sender` 形状（确认防自答过滤的真正形状——当前实现只比对 `type ∈ {app, service_principal} + id`）与 `accepts_reply` 的 waiting-question 语用。
-3. **v1 增件**：GA 完整 content 节点集灌贯、历史回放、Docs/Sheets MCP 似真、`dsh-gate-kubectl` 同合。
+   - **首帧抓包**：✅ ① @bot 群消息 `mentions[].id` 是下标串（`"1"`），真命中在 `mentions[].identity.id == spId`（另有 `<at id>N 展示名</at>` 字面兜底）；② bot 自发消息 `sender.type == "sp"`、`sender.id == spId`（`SELF_TYPES` 已含），卡片类自发消息 `content` 为 `null`——三样均来自真帧，已固化进 `test/protocol.test.ts` 的 `REAL_FRAMES`。
+3. **v1 增件**：GA 完整 content 节点集灌贯（含媒体字节下载与多模态透传，见「模态」一节）、历史回放、Docs/Sheets MCP 似真、`dsh-gate-kubectl` 同合。
 
 ## 许可证
 
