@@ -307,8 +307,10 @@ export function apply(rawCtx: Context, config: WpsBotConfig): void {
         .filter((entry) => entry.handle !== undefined)
         .map((entry) => (entry.handle as AgentHandleLike).dispose());
       await Promise.allSettled(disposals);
-      if (eventClient !== undefined) {
-        await eventClient.stop().catch(() => undefined);
+      try {
+        eventClient?.stop(); // SDK 1.0.1 stop(): void（无 await）
+      } catch {
+        /* 静默 */
       }
     };
   }, "wps-bot.serve");

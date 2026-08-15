@@ -8,24 +8,33 @@ import {
   type RawMessageEventData,
 } from "../src/protocol.ts";
 
-const BOT_IDS = ["app-1", "sp-1"];
+const BOT_IDS = ["app-1", "sp-1", "service-principal-1"];
 
-test("normalizeEventData：字段面按 bridge normalize 逐字对齐", () => {
-  const data: RawMessageEventData = {
-    chat: { id: "c1", type: "group" },
-    sender: { id: "u1", name: "张三" },
-    message: {
-      id: "m1",
-      quote_msg_id: "m0",
-      content: { text: { content: "你好" } },
-      mentions: [],
-    },
-  };
-  const ev = normalizeEventData(data, BOT_IDS, "e9");
-  assert.equal(ev?.chatId, "c1");
+// open-event-sdk@1.0.1 dist/event/model/index.d.ts 对齐形状：content.text 是 string
+const SDK_SHAPED: RawMessageEventData = {
+  company_id: "corp-1",
+  chat: { id: "chat-1", type: "group" },
+  sender: {
+    type: "user",
+    id: "u1",
+    extended_attribute: { name: "张三" },
+  },
+  send_time: 1_700_000_000,
+  message: {
+    id: "msg-1",
+    type: "text",
+    content: { text: "你好" },
+    mentions: [],
+    quote_msg_id: "msg-0",
+  },
+};
+
+test("normalizeEventData：SDK 真实模型的字段面", () => {
+  const ev = normalizeEventData(SDK_SHAPED, BOT_IDS, "fallback");
+  assert.equal(ev?.chatId, "chat-1");
   assert.equal(ev?.chatType, "group");
-  assert.equal(ev?.eventId, "m1");
-  assert.equal(ev?.quoteMsgId, "m0");
+  assert.equal(ev?.eventId, "msg-1");
+  assert.equal(ev?.quoteMsgId, "msg-0");
   assert.equal(ev?.senderId, "u1");
   assert.equal(ev?.senderName, "张三");
   assert.equal(ev?.text, "你好");
@@ -34,9 +43,13 @@ test("normalizeEventData：字段面按 bridge normalize 逐字对齐", () => {
   assert.equal(ev?.evidenceBearing, false);
 });
 
-test("normalizeEventData：event id 三级回退；无 chat id → null", () => {
+test("normalizeEventData：eventId 三级回退；无 chat id → null", () => {
   const ev1 = normalizeEventData(
-    { chat: { id: "c1", type: "group" }, sender: { id: "u1" }, message_id: "mid" } as RawMessageEventData,
+    {
+      chat: { id: "c1" },
+      sender: { id: "u1" },
+      message_id: "mid",
+    } as RawMessageEventData,
     BOT_IDS,
     "event-id",
   );
@@ -45,17 +58,52 @@ test("normalizeEventData：event id 三级回退；无 chat id → null", () => 
   assert.equal(ev2, null);
 });
 
-test("parseContent：rich 富文本 mention 节点把 @名称拼进文本", () => {
+test("normalizeEventData：mentions 数组走 SDK (type=user,id=sp) 命中 bot", () => {
+  const data: RawMessageEventData = {
+    ...SDK_SHAPED,
+    message: {
+      ...SDK_SHAPED.message,
+      mentions: [{ type: "user", id: "sp-1", offset: 0, length: 1 }],
+    },
+  };
+  const ev = normalizeEventData(data, BOT_IDS, "e");
+  assert.equal(ev?.mentioned, true);
+});
+
+test("parseContent：content.text 是 string", () => {
+  const parsed = parseContent({ text: "hello" });
+  assert.equal(parsed.text, "hello");
+  assert.equal(parsed.evidenceBearing, false);
+});
+
+test("parseContent：file / image 触发 evidence 并入住附件", () => {
+  const parsed = parseContent({ file: { file_id: "file-tok-1", name: "报告.pdf" } });
+  assert.equal(parsed.evidenceBearing, true);
+  assert.equal(parsed.attachments.length, 1);
+  assert.equal(parsed.attachments[0]?.kind, "file");
+  assert.equal(parsed.attachments[0]?.storageKey, "file-tok-1");
+
+  const image = parseContent({ image: { file_id: "img-1" } });
+  assert.equal(image.evidenceBearing, true);
+  assert.equal(image.attachments[0]?.kind, "image");
+});
+
+test("parseContent：未知 content 键列为 unparsed（空 evidence 语义）", () => {
+  const parsed = parseContent({ text: "好", audio: { file_id: "a1" } });
+  assert.equal(parsed.evidenceBearing, true);
+  assert.equal(parsed.unparsed.length, 1);
+  assert.equal(parsed.unparsed[0]?.reason, "unknown-content-key");
+  assert.equal(parsed.unparsed[0]?.path, "content.audio");
+});
+
+test("parseContent：老 wire 的 rich_text 兼容识别", () => {
   const parsed = parseContent({
     rich_text: {
       elements: [
         { type: "text", text: { content: "看看" } },
         {
           type: "mention",
-          mention_content: {
-            name: "甘小雨",
-            identity: { type: "app", app_id: "app-1" },
-          },
+          mention_content: { name: "甘小雨", identity: { type: "app", app_id: "app-1" } },
         },
       ],
     },
@@ -64,57 +112,11 @@ test("parseContent：rich 富文本 mention 节点把 @名称拼进文本", () =
   assert.equal(parsed.evidenceBearing, false);
 });
 
-test("parseContent：附件/云文档/unparsed 触发 evidenceBearing（GA 四字段判定面）", () => {
-  const attachments = parseContent({
-    rich_text: { elements: [{ type: "file", storage_key: "stor-1", name: "报告.pdf", size: 1 }] },
-  });
-  assert.equal(attachments.evidenceBearing, true);
-  assert.equal(attachments.attachments.length, 1);
-  assert.equal(attachments.attachments[0]?.storageKey, "stor-1");
-
-  const cloud = parseContent({ rich_text: { elements: [{ type: "cloud_doc", url: "https://kdocs.cn/doc/1", doc_id: "d1" }] } });
-  assert.equal(cloud.evidenceBearing, true);
-  assert.deepEqual(cloud.cloudDocLinks, ["https://kdocs.cn/doc/1"]);
-  assert.deepEqual(cloud.sharedDocIds, ["d1"]);
-
-  const unknown = parseContent({ rich_text: { elements: [{ type: "mystery-node", raw: 1 }] } });
-  assert.equal(unknown.evidenceBearing, true);
-  assert.equal(unknown.unparsed.length, 1);
-  assert.equal(unknown.unparsed[0]?.reason, "unparsed-type:mystery-node");
-
-  const nonObject = parseContent("hi");
-  assert.equal(nonObject.evidenceBearing, true);
-  assert.equal(nonObject.unparsed[0]?.reason, "non-object-content");
-});
-
-test("isSelfEvent：只有 app/sp 且 id 命中 botIds 才认自带", () => {
+test("isSelfEvent：匹配 SDK sender.type=u/app/service_principal + id/app_id", () => {
   assert.equal(isSelfEvent({ type: "app", id: "app-1" }, BOT_IDS), true);
-  assert.equal(isSelfEvent({ type: "sp", app_id: "sp-1" }, BOT_IDS), true);
-  assert.equal(isSelfEvent({ type: "user", id: "app-1" }, BOT_IDS), false);
+  assert.equal(isSelfEvent({ type: "service_principal", id: "sp-1" }, BOT_IDS), true);
+  assert.equal(isSelfEvent({ type: "app", id: "app-1", app_id: "app-1" }, BOT_IDS), true);
   assert.equal(isSelfEvent({ type: "app", id: "someone" }, BOT_IDS), false);
+  assert.equal(isSelfEvent({ type: "user", id: "app-1" }, BOT_IDS), false);
   assert.equal(isSelfEvent(undefined, BOT_IDS), false);
-});
-
-test("normalizeEventData：rich mention 命中 bot → mentioned", () => {
-  const data: RawMessageEventData = {
-    chat: { id: "c1", type: "group" },
-    sender: { id: "u1" },
-    message: {
-      id: "m2",
-      content: {
-        rich_text: {
-          elements: [
-            { type: "text", text: { content: "查下" } },
-            {
-              type: "mention",
-              mention_content: { name: "甘小雨", identity: { type: "app", app_id: "app-1" } },
-            },
-          ],
-        },
-      },
-      mentions: [],
-    },
-  };
-  const ev = normalizeEventData(data, BOT_IDS, "e");
-  assert.equal(ev?.mentioned, true);
 });

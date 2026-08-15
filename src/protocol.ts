@@ -1,12 +1,15 @@
 /**
- * WPS 365 事件 canonical 化 + content 解析（wire 面）。
+ * WPS 365 事件 canonical 化（wire 面）——与 `open-event-sdk@1.0.1` 的 `dist/event/model/index.d.ts`
+ * 逐字对齐（`V7NotificationAppChatMessageCreateData` / `V7NotificationMessageInfo` /
+ * `V7NotificationChatInfo` / `V7Identity` / `V7MessageContent` / `V7ChatMessageMention`），
+ * 并保留 rich_text 的向前兼容识别（若未来 wire 新增富文本节点，不静默丢）。
  *
- * 迁移来源：
- *  - ksbot_ga/bridge/wps_event_normalize.mjs（normalize 的形状与 mentions/diff 逻辑）
- *  - ksbot_ga/src/ga_wps/protocol.py（canonical 字段面、残差语义）
- *
- * v0 的 content 解析只覆盖 text / rich_text 基础节点。
- * 未知节点类型按 GA 残差语义落 unparsed 记录（不做静默丢弃）。
+ * 与 ksbot_ga/bridge 的形状差异（本项目照 SDK 真值，不照 GA 先验）：
+ *  - `content.text` 是 string（GA 的旧 normalize 按 `{content}` 解；SDK 真值是 string）
+ *  - content 只三档 text/image/file（GA 的 rich_text 语义在 SDK 里不存在；保留兼容识别）
+ *  - `sender` 无 name 字段（GA 按 `sender.name`；SDK 真值是 `extended_attribute.name`）
+ *  - `sender.type` 值域 `user|app|service_principal`（GA 按 `'sp'`）
+ *  - 事件对象无 per-event uuid → eventId 只能是 `message.id`（与 GA 回退一致）
  *
  * @module dsh-wps-bot/protocol
  */
@@ -35,17 +38,55 @@ export interface ParsedContent {
   evidenceBearing: boolean;
 }
 
-/** kso.app_chat.message.create 事件 data 的最小形状（正常形态由 bridge 约定）。 */
+/** Credentials 用的自述 sender 类型（GA: app/sp；SDK 真值： user/app/service_principal）。 */
+const SELF_TYPES = new Set(["app", "sp", "service_principal"]);
+
+export interface V7IdentityLike {
+  type?: string;
+  id?: string;
+  app_id?: string;
+  extended_attribute?: { source?: string; name?: string } | null;
+}
+
+export interface V7MessageContentLike {
+  text?: string;
+  image?: { file_id?: string } | null;
+  file?: { file_id?: string; name?: string } | null;
+  /** SDK 1.0.1 之外的老 wire：若回拉参到哪里历史节点识别保留 */
+  rich_text?: unknown;
+}
+
+export interface V7MentionLike {
+  type?: string;
+  id?: string;
+  offset?: number;
+  length?: number;
+  /** 老 wire：mention 壳在 message.content.rich_text.elements 里 */
+  mention_content?: { name?: string; identity?: Record<string, unknown> };
+}
+
+export interface V7MessageLike {
+  id?: string;
+  type?: string;
+  content?: V7MessageContentLike | unknown;
+  mentions?: V7MentionLike[];
+  quote_msg_id?: string;
+}
+
+/** kso.app_chat.message.create 事件 data（或 data 中套着的 message）的最小形状（SDK 真值）。 */
 export interface RawMessageEventData {
-  message?: Record<string, unknown>;
-  content?: Record<string, unknown>;
-  mentions?: unknown[];
+  company_id?: string;
   chat?: { id?: string; type?: string };
   chat_id?: string;
-  sender?: { id?: string; name?: string; sender_name?: string; type?: string; app_id?: string };
+  sender?: V7IdentityLike;
+  send_time?: number;
+  message?: V7MessageLike;
   message_id?: string;
   event_id?: string;
   quote_msg_id?: string;
+  /** 老 wire 兼容：data.content 直接当 content */
+  content?: unknown;
+  mentions?: unknown[];
 }
 
 export interface WpsEvent {
@@ -70,50 +111,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function identityMatchesBot(
-  identity: Record<string, unknown> | undefined,
-  botIds: string[],
-): boolean {
-  if (!identity || !["sp", "app"].includes(String(identity.type))) return false;
-  const id = [identity.app_id, identity.id].map(String);
-  return id.some((value) => value && botIds.includes(value));
+function mentionsSync(message: V7MessageLike | undefined, botIds: string[]): boolean {
+  if (message === undefined || !Array.isArray(message.mentions)) return false;
+  return (message.mentions as V7MentionLike[]).some(
+    (m) => typeof m?.id === "string" && m.id.length > 0 && botIds.includes(m.id),
+  );
 }
 
-function mentionsSync(
-  rawMentions: unknown,
-  content: Record<string, unknown> | null,
-  botIds: string[],
-): boolean {
-  const mentions = Array.isArray(rawMentions) ? rawMentions : [];
-  if (
-    mentions.some((item) =>
-      identityMatchesBot(
-        isRecord(item) && isRecord(item.identity) ? item.identity : undefined,
-        botIds,
-      ),
-    )
-  ) {
-    return true;
-  }
-  const rich = content?.rich_text as Record<string, unknown> | undefined;
-  const rows = (rich?.elements ?? rich?.content) as unknown;
-  if (!Array.isArray(rows)) return false;
-  return rows.some((row) => {
-    const elements = isRecord(row) && Array.isArray(row.elements) ? row.elements : [row];
-    return (elements as unknown[]).some(
-      (item) =>
-        isRecord(item) &&
-        item.type === "mention" &&
-        identityMatchesBot(
-          isRecord(item.mention_content) && isRecord((item.mention_content as Record<string, unknown>).identity)
-            ? ((item.mention_content as Record<string, unknown>).identity as Record<string, unknown>)
-            : undefined,
-          botIds,
-        ),
-    );
-  });
-}
-
+/** rich_text 兼容识别（SDK 新 wire 无 rich_text 也不走这条路径）。 */
 function flattenRichElements(content: Record<string, unknown> | null): unknown[] {
   const rich = content?.rich_text as Record<string, unknown> | undefined;
   const rows = (rich?.elements ?? rich?.content) as unknown;
@@ -126,7 +131,24 @@ function flattenRichElements(content: Record<string, unknown> | null): unknown[]
   return out;
 }
 
-/** 解析 content 为 text + 附件 + 云文档 + unparsed。 */
+function attachmentFrom(content: V7MessageContentLike | unknown, key: string, kind: string): Attachment | null {
+  if (!isRecord(content)) return null;
+  const node = content[key as keyof typeof content];
+  if (!isRecord(node)) return null;
+  const fileId = typeof node.file_id === "string" ? node.file_id : typeof node.storage_key === "string" ? node.storage_key : typeof node.url === "string" ? node.url : "";
+  if (!fileId) return null;
+  return {
+    kind,
+    storageKey: fileId,
+    name: typeof node.name === "string" ? node.name : "",
+    size: typeof node.size === "number" ? node.size : 0,
+    mime: typeof node.mime === "string" ? node.mime : "",
+  };
+}
+
+const CONTENT_KNOWN_KEYS = new Set(["text", "image", "file", "rich_text"]);
+
+/** SDK 1.0.1 content 形状：text string 为主，image/file 定值；细节未知一律 unparsed（空 evidence）。 */
 export function parseContent(content: unknown): ParsedContent {
   const parsed: ParsedContent = {
     text: "",
@@ -136,22 +158,21 @@ export function parseContent(content: unknown): ParsedContent {
     unparsed: [],
     evidenceBearing: false,
   };
+  if (content === null || content === undefined) return parsed;
   if (!isRecord(content)) {
-    if (content !== null && content !== undefined) {
-      parsed.unparsed.push({
-        path: "content",
-        reason: "non-object-content",
-        value: content,
-      });
-      parsed.evidenceBearing = true;
-    }
+    parsed.unparsed.push({ path: "content", reason: "non-object-content", value: content });
+    parsed.evidenceBearing = true;
     return parsed;
   }
 
-  const text = content.text as Record<string, unknown> | undefined;
-  if (typeof text?.content === "string") {
-    parsed.text = text.content;
-  }
+  const record = content as Record<string, unknown>;
+
+  if (typeof record.text === "string") parsed.text = record.text;
+
+  const image = attachmentFrom(record, "image", "image");
+  if (image) parsed.attachments.push(image);
+  const file = attachmentFrom(record, "file", "file");
+  if (file) parsed.attachments.push(file);
 
   const elements = flattenRichElements(content);
   elements.forEach((raw, index) => {
@@ -169,7 +190,6 @@ export function parseContent(content: unknown): ParsedContent {
         return;
       }
       case "mention": {
-        /** mention 节点只补 @显示名，不回灌 identity 给模型 */
         const inner = raw.mention_content as Record<string, unknown> | undefined;
         const name = String(inner?.name ?? inner?.content ?? "");
         parsed.text += name ? `@${name}` : "@";
@@ -179,16 +199,16 @@ export function parseContent(content: unknown): ParsedContent {
       case "attachment":
       case "media":
       case "image": {
-        const attachment: Attachment = {
-          kind: type,
-          storageKey: String(
-            raw.storage_key ?? raw.file_token ?? raw.file_id ?? raw.url ?? "",
-          ),
-          name: String(raw.name ?? raw.file_name ?? ""),
-          size: Number(raw.size ?? 0) || 0,
-          mime: String(raw.mime ?? raw.mime_type ?? ""),
-        };
-        parsed.attachments.push(attachment);
+        const fileId = String(raw.storage_key ?? raw.file_token ?? raw.file_id ?? raw.url ?? "");
+        if (fileId) {
+          parsed.attachments.push({
+            kind: type,
+            storageKey: fileId,
+            name: String(raw.name ?? raw.file_name ?? ""),
+            size: Number(raw.size ?? 0) || 0,
+            mime: String(raw.mime ?? raw.mime_type ?? ""),
+          });
+        }
         return;
       }
       case "cloud_doc": {
@@ -209,6 +229,12 @@ export function parseContent(content: unknown): ParsedContent {
     }
   });
 
+  for (const key of Object.keys(record)) {
+    if (!CONTENT_KNOWN_KEYS.has(key)) {
+      parsed.unparsed.push({ path: `content.${key}`, reason: "unknown-content-key", value: record[key] });
+    }
+  }
+
   parsed.evidenceBearing =
     parsed.attachments.length > 0 ||
     parsed.cloudDocLinks.length > 0 ||
@@ -217,43 +243,36 @@ export function parseContent(content: unknown): ParsedContent {
   return parsed;
 }
 
-/**
- * kso.app_chat.message.create 事件 → canonical WpsEvent。
- * 逐行迁移 ksbot_ga/bridge/wps_event_normalize.mjs 的字段面。
- */
+/** kso.app_chat.message.create 事件 → canonical WpsEvent（SDK 真值的 `data` 形状）。 */
 export function normalizeEventData(
   data: RawMessageEventData,
   botIds: string[],
   eventId: string,
 ): WpsEvent | null {
-  const message = isRecord(data?.message) ? data.message : {};
-  const content = isRecord(message.content)
-    ? message.content
-    : isRecord(data?.content)
-      ? data.content
-      : isRecord(data?.message as unknown)
-        ? (data.message as Record<string, unknown>)
-        : null;
-  const mentions = Array.isArray(message.mentions) && message.mentions.length
-    ? message.mentions
-    : Array.isArray(data?.mentions)
-      ? data.mentions
-      : [];
+  const message = (isRecord(data?.message) ? data.message : undefined) as V7MessageLike | undefined;
+  // content 三层回退（与 GA Bridge 一致，但.Primary 路径是 SDK `message.content`）
+  const content: unknown =
+    message?.content ??
+    (isRecord(data?.content) ? data.content : undefined) ??
+    (message as unknown);
+  const sender = data?.sender ?? {};
   const chatId = String(data?.chat?.id ?? data?.chat_id ?? "");
   if (!chatId) return null;
 
   const parsed = parseContent(content);
-  const mentioned = mentionsSync(mentions, content, botIds);
+  const mentioned = mentionsSync(message, botIds);
 
   return {
     chatId,
     chatType: String(data?.chat?.type ?? ""),
     eventId: String(
-      message.id ?? data?.message_id ?? data?.event_id ?? eventId ?? "",
+      message?.id ?? data?.message_id ?? data?.event_id ?? eventId ?? "",
     ),
-    quoteMsgId: String(message.quote_msg_id ?? data?.quote_msg_id ?? ""),
-    senderId: String(data?.sender?.id ?? ""),
-    senderName: String(data?.sender?.name ?? data?.sender?.sender_name ?? ""),
+    quoteMsgId: String(message?.quote_msg_id ?? data?.quote_msg_id ?? ""),
+    senderId: String(sender.id ?? ""),
+    senderName: String(
+      sender.extended_attribute?.name ?? "",
+    ),
     mentioned,
     botIds,
     text: parsed.text,
@@ -266,13 +285,13 @@ export function normalizeEventData(
   };
 }
 
-/** 服务主体自带消息不计入用户行为（bridge.mjs:26-27 的过滤语义）。 */
+/** 服务主体自带消息不计入用户行为（SDK: type=app|service_principal 且 id 命中 botIds）。 */
 export function isSelfEvent(
-  sender: RawMessageEventData["sender"],
+  sender: V7IdentityLike | undefined,
   botIds: string[],
 ): boolean {
   if (!sender) return false;
-  if (!["app", "sp"].includes(String(sender.type))) return false;
+  if (!SELF_TYPES.has(String(sender.type))) return false;
   return [sender.id, sender.app_id]
     .map(String)
     .some((id) => id && botIds.includes(id));
