@@ -407,4 +407,6 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
 }
 
 export { approvalQuestion, ACK_APPROVED, ACK_DECLINED, ACK_TIMEOUT } from "./bot.ts";
-export default { name, Config, apply };
+// 装载器真值 vendor/loader/src:194：`exports.default ?? exports`——default 在则遮蔽具名 inject，
+// 导致 fork 无声明、ctx.agents 访问炸「cannot get property without inject」（真机实证）。两面都要。
+export default { name, inject, Config, apply };

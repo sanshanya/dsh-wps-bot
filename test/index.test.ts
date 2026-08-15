@@ -95,3 +95,11 @@ test("clearDisposedHandles：payload 是 { agent } 包装（runtime-types.ts:168
   assert.equal(clearDisposedHandles(chats, null), 0);
   assert.equal(clearDisposedHandles(chats, {}), 0);
 });
+
+test("default 导出必须携带 inject（vendor/loader unwrapExports 优先 default，缺则真机炸 without inject）", async () => {
+  const mod = await import("../src/index.ts") as unknown as { default: { inject?: unknown; name?: string; apply?: unknown } };
+  assert.deepEqual(mod.default.inject, ["agents"]);
+  assert.equal(mod.default.name, "wps-bot");
+  assert.equal(typeof mod.default.apply, "function");
+});
+
