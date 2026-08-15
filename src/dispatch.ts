@@ -118,14 +118,16 @@ export class WpsRouter {
     return "enqueue";
   }
 
-  /** 同 chat 串行：仅在会话空闲时吐出队首一条。会话空闲事件由宿主调用本方法。 */
-  async drain(chatId: string): Promise<void> {
+  /** 同 chat 串行：仅在会话空闲时吐出队首一条。会话空闲事件由宿主调用本方法。
+   *  @returns true = 本逼交涉成功出队并投递（finalizeTurn 靠它决定是否算作「还有活任务」）
+   */
+  async drain(chatId: string): Promise<boolean> {
     const handle = this.handles.get(chatId);
-    if (handle && handle.status() === "running") return;
+    if (handle && handle.status() === "running") return false;
     const queue = this.queues.get(chatId);
-    if (!queue || queue.length === 0) return;
+    if (!queue || queue.length === 0) return false;
     const next = queue.shift();
-    if (next === undefined) return;
+    if (next === undefined) return false;
     let target = handle;
     if (target === undefined) {
       target = await this.opts.ensure(chatId);
@@ -134,6 +136,7 @@ export class WpsRouter {
     try {
       this.opts.onDispatched?.(chatId, next, "enqueue");
       await target.followup(this.factify(next));
+      return true;
     } catch (error) {
       queue.unshift(next);
       this.opts.logger?.warn(`[wps-bot] followup failed, requeued in front: ${String(error)}`);

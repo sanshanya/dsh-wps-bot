@@ -397,6 +397,86 @@ test("quote：只有引用在途进度卡才算 direct；完结后旧卡引证�
   }
 });
 
+test("N2 卡片共养：同 chat 排轮两个任务共一张卡，至多一条卡片、原地更新、完结才 recall", async () => {
+  const { core, handle, client, cleanup } = makeRig({ cardInitialDelayMs: 10 });
+  try {
+    // 任务1入队投递 + 任务2再来（busy）
+    await core.handleIncomingEvent(ev({ isPrivate: true, chatType: "p2p", text: "任务一" }));
+    handle.running = true;
+    assert.equal(
+      await core.handleIncomingEvent(
+        ev({
+          isPrivate: true,
+          chatType: "p2p",
+          text: "任务二（带附件）",
+          attachments: [{ kind: "file", storageKey: "stor", name: "a.pdf", size: 1, mime: "" }],
+          evidenceBearing: true,
+        }),
+      ),
+      "enqueue",
+    );
+    await SLEEP(30); // 此时 should 卡
+    assert.equal(client.cardsSent.length, 1);
+
+    // 任务1 体格：turn/end completed + 终态交付
+    core.handleSessionEvent("sess:c1", {
+      type: "assistant/message",
+      data: { turn: 1, step: 2, message: { content: [{ type: "text", text: "答案一" }] } },
+    });
+    handle.running = false;
+    core.handleSessionEvent("sess:c1", { type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } });
+    await SLEEP(10);
+    // 任务2 已被 drain 投递：卡片续更（未 recall / 不重起）
+    assert.equal(handle.followupLog.length, 2);
+    assert.equal(client.recalls.length, 0);
+    assert.equal(client.cardsSent.length, 1);
+
+    // 任务2 体格：turn/end completed + 终态交付 → 队空，才收卡
+    core.handleSessionEvent("sess:c1", {
+      type: "assistant/message",
+      data: { turn: 2, step: 1, message: { content: [{ type: "text", text: "答案二" }] } },
+    });
+    handle.running = false;
+    core.handleSessionEvent("sess:c1", { type: "turn/end", data: { turn: 2, reason: { kind: "completed" } } });
+    await SLEEP(10);
+    assert.equal(client.recalls.length, 1);
+    const splits = client.splits.map((s) => s.text);
+    assert.ok(splits.includes("答案一"));
+    assert.ok(splits.includes("答案二"));
+  } finally {
+    await core.shutdown();
+    await cleanup();
+  }
+});
+
+test("N3：max-tokens / blocked 两类 turn/end 也送中断通知 + 清 pending", async () => {
+  const { core, handle, client, cleanup } = makeRig();
+  try {
+    await core.handleIncomingEvent(ev({ isPrivate: true, chatType: "p2p" }));
+    handle.running = false;
+    core.handleSessionEvent("sess:c1", { type: "turn/end", data: { turn: 1, reason: { kind: "blocked" } } });
+    await SLEEP(10);
+    const notice = client.markdown.find((m) => m.text.includes("任务已中止"));
+    assert.ok(notice);
+    assert.ok(notice!.text.includes("限定的轮次/输出"));
+
+    const rig2 = makeRig();
+    try {
+      await rig2.core.handleIncomingEvent(ev({ isPrivate: true, chatType: "p2p" }));
+      rig2.handle.running = false;
+      rig2.core.handleSessionEvent("sess:c1", { type: "turn/end", data: { turn: 1, reason: { kind: "max-tokens" } } });
+      await SLEEP(10);
+      assert.ok(rig2.client.markdown.some((m) => m.text.includes("限定的轮次/输出")));
+    } finally {
+      await rig2.core.shutdown();
+      await rig2.cleanup();
+    }
+  } finally {
+    await core.shutdown();
+    await cleanup();
+  }
+});
+
 test("M1：turn 被中止后，死的 pending 不得以幻影走答允（无 ack/无批准入账）", async () => {
   const { core, handle, client, cleanup, auditPath } = makeRig({ approvalTimeoutMs: 60000 });
   try {

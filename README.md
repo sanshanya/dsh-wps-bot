@@ -65,7 +65,7 @@ export WPS365_SP_ID=...
 npm test
 ```
 
-44 个用例（签名 / 分段 / 同意 / 幂等 / 协议 / 分发 / 卡片 / 宿主无关核心全链路），全部为纯 `node --test` + 假实现替身，运行不需要 WPS 凭据。与真实 WPS 租户的真实联通验证属于产品发布通路（roadmap 第 3 项）。
+50 个用例（签名 / 分段 / 同意 / 幂等 / 协议 / 分发 / 卡片 / 宿主无关核心全链路 + 宿主接线纯函数），全部为纯 `node --test` + 假实现替身，运行不需要 WPS 凭据。与真实 WPS 租户的真实联通验证属于产品发布通路（roadmap 第 3 项）。
 
 ## 分层
 
@@ -77,6 +77,7 @@ npm test
 
 1. ✅ **本版**：协议/分诊/卡片/审批纯模块 + 宿主接线 + 33 用例。
 2. **真实联通自证**：同一天与真 WPS 租户 + 真 LLM profile 合跑文本问答、进度卡片、限时窗三条主场景。
+   - **首帧抓包（必做）**：① @bot 群消息的 `mentions[]` 载荷（确认 `id` == `spId`/`clientId` 命中哪一只）；② bot 自发出消息的 `sender` 形状（确认防自答过滤的真正形状——当前实现只比对 `type ∈ {app, service_principal} + id`）与 `accepts_reply` 的 waiting-question 语用。
 3. **v1 增件**：GA 完整 content 节点集灌贯、历史回放、Docs/Sheets MCP 似真、`dsh-gate-kubectl` 同合。
 
 ## 许可证

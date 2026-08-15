@@ -152,8 +152,9 @@ export class WpsBotCore {
       },
       onDispatched: (chatId, ev, route) => {
         this.sessions.setRequester(chatId, { userId: ev.senderId, name: ev.senderName });
-        // GA：inject 是进行中任务的干预，不重置轮次时钟；仅当无活卡时才起步
-        if (route === "inject" && this.cards.hasActive(chatId)) return;
+        // GA 一卡共养：同 chat 已有活卡就不起步（跨排程任务续更同一张卡；
+        // 仅当 finalizeTurn 在空闲收官回完上张卡后才设新一轮的起始点）
+        if (this.cards.hasActive(chatId)) return;
         this.cards.start(chatId);
       },
       logger: { warn: (...args: unknown[]) => this.logger.warn(...args) },
@@ -278,6 +279,11 @@ export class WpsBotCore {
           this.turnFinalText.delete(chatId);
           this.cancelPending(chatId); // M1：turn 死去，死的 pending 不得以幻影走答允
           void this.interrupt(chatId, kind);
+        } else if (kind === "max-tokens" || kind === "blocked") {
+          // N3：限定的轮次/输出都给了但仍未终态——按 GA「无可交付 → 原 chat 通告」补一条
+          this.turnFinalText.delete(chatId);
+          this.cancelPending(chatId);
+          void this.interrupt(chatId, kind);
         } else {
           this.turnFinalText.delete(chatId);
         }
@@ -298,10 +304,16 @@ export class WpsBotCore {
   }
 
   async interrupt(chatId: string, kind: unknown): Promise<void> {
+    const phrase =
+      kind === "aborted"
+        ? "被中止"
+        : kind === "error"
+          ? "失败"
+          : "未在限定的轮次/输出内完成";
     try {
       await this.client.sendMarkdown(
         chatId,
-        `[任务已中止] 当前任务已${kind === "aborted" ? "被中止" : "失败"}（chat ${chatId}）。如需继续，请重新发起任务。`,
+        `[任务已中止] 当前任务已${phrase}（chat ${chatId}）。如需继续，请重新发起任务。`,
       );
     } catch (error) {
       this.logger.warn("[wps-bot] interrupt notice failed:", error);
@@ -309,8 +321,9 @@ export class WpsBotCore {
   }
 
   async finalizeTurn(chatId: string): Promise<void> {
-    await this.router.drain(chatId).catch(() => undefined);
-    if (this.router.queued(chatId) === 0) await this.cards.finish(chatId);
+    // N2：drain 表示本次又派发了下轮任务 → 卡片共养续更，只在真苦闲态（无交付+队列空）时收官
+    const dispatched = await this.router.drain(chatId).catch(() => false);
+    if (!dispatched && this.router.queued(chatId) === 0) await this.cards.finish(chatId);
   }
 
   /** 卸载/重启：失败 pending 回 cancelled；卡片完结；送因回退 commit 的 bash 记志全部留意。 */

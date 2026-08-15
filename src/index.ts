@@ -100,6 +100,47 @@ interface ChatEntry {
   requester?: { userId: string; name: string };
 }
 
+/** F5/R17 调用面：resume 优先，失败/无持久化再 create（两个入口返回同一 AgentHandleLike）。 */
+export async function createOrResume(
+  agents: {
+    create: (opts: Record<string, unknown>) => Promise<unknown>;
+    resume?: (opts: Record<string, unknown>) => Promise<unknown>;
+  },
+  args: { sessionId: unknown; cwd: string; agentOptions: Record<string, unknown> },
+): Promise<unknown> {
+  if (agents.resume !== undefined) {
+    try {
+      return await agents.resume({
+        resumeSessionId: args.sessionId,
+        agentOptions: args.agentOptions,
+      });
+    } catch {
+      /* 持久线空或同 id 拒绝 → 走 create */
+    }
+  }
+  return agents.create({
+    sessionId: args.sessionId,
+    meta: { cwd: args.cwd },
+    agentOptions: args.agentOptions,
+  });
+}
+
+/** N1：agent/disposed 的清句柄（payload 形状 runtime-types.ts:168 = { agent }）。 */
+export function clearDisposedHandles(
+  chats: Map<string, { handle?: { agent?: unknown } }>,
+  payload: unknown,
+): number {
+  const agent = (payload as { agent?: unknown } | null | undefined)?.agent;
+  let cleared = 0;
+  for (const [, entry] of chats) {
+    if (entry.handle?.agent !== undefined && entry.handle.agent === agent) {
+      entry.handle = undefined;
+      cleared += 1;
+    }
+  }
+  return cleared;
+}
+
 export function apply(rawCtx: Context, config: WpsBotConfig): void {
   const ctx: any = rawCtx;
   const logger = ctx.logger ?? console;
@@ -150,20 +191,14 @@ export function apply(rawCtx: Context, config: WpsBotConfig): void {
     if (entry !== undefined && entry.handle !== undefined) return wrap(chatId, entry.handle);
     // F5/R17：resume 优先——持久 line 截盘上已存在同 id 时 create 走拒绝路径，turn 照跑零持久化零信号
     const sessionId = SessionId(`wps-bot:${chatId}`);
-    const agentOptions = {
-      provider: config.provider ?? "deepseek-official",
-      model: config.model ?? "deepseek-v4-flash",
-    };
-    let handle: AgentHandleLike;
-    try {
-      handle = (await ctx.agents.resume({ resumeSessionId: sessionId, agentOptions })) as AgentHandleLike;
-    } catch {
-      handle = (await ctx.agents.create({
-        sessionId,
-        meta: { cwd: config.workspaceRoot || process.cwd() },
-        agentOptions,
-      })) as AgentHandleLike;
-    }
+    const handle = (await createOrResume(ctx.agents, {
+      sessionId,
+      cwd: config.workspaceRoot || process.cwd(),
+      agentOptions: {
+        provider: config.provider ?? "deepseek-official",
+        model: config.model ?? "deepseek-v4-flash",
+      },
+    })) as AgentHandleLike;
     if (entry === undefined) {
       entry = { chatId };
       chats.set(chatId, entry);
@@ -237,10 +272,9 @@ export function apply(rawCtx: Context, config: WpsBotConfig): void {
 
   // ---- cordis 事件钩子 ----
 
-  void ctx.on("agent/disposed", (agent: unknown) => {
-    for (const [, entry] of chats) {
-      if (entry.handle?.agent === agent) entry.handle = undefined;
-    }
+  // N1：payload 形状是 { agent }（runtime-types.ts:168），不能按整包做恒等比较
+  void ctx.on("agent/disposed", (payload: unknown) => {
+    clearDisposedHandles(chats, payload);
   });
 
   void ctx.on("session/event", (session: AgentSessionLike, event: { type: string; data?: unknown }) => {
