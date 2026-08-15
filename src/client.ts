@@ -26,7 +26,7 @@ export class WpsApiError extends Error {
   constructor(
     operation: string,
     message: string,
-    opts: { status?: number; code?: number | string; requestId?: string } = {},
+    opts: { status?: number; code?: number | string | null; requestId?: string } = {},
   ) {
     const fields = [
       `operation=${operation}`,
@@ -86,7 +86,7 @@ function errorFields(value: Json, fallback = "unknown error"): {
 } {
   return {
     message: String(value.message ?? value.msg ?? value.error ?? fallback),
-    code: (value.code as number | string | undefined) ?? (value.errcode as number | string | undefined) ?? null,
+    code: ((value.code ?? value.errcode ?? null) as number | string | null),
     requestId: String(value._request_id ?? value.request_id ?? ""),
   };
 }

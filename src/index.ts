@@ -45,12 +45,12 @@ export interface WpsBotConfig {
   workspaceRoot?: string;
   seenEventsPath?: string;
   personaTitle?: string;
-  cardMode?: "card" | "off";
+  cardMode?: string;
   cardInitialDelaySeconds?: number;
   cardHeartbeatSeconds?: number;
   cardUpdateMinIntervalSeconds?: number;
-  cardSettle?: "recall" | "update";
-  approvalMode?: "windows" | "disabled";
+  cardSettle?: string;
+  approvalMode?: string;
   approvalTimeoutSeconds?: number;
   allowWindow?: boolean;
   auditPath?: string;

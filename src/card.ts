@@ -149,6 +149,11 @@ export class ProgressCards {
     }
   }
 
+  /** 同 chat 是否还有活卡（GA 干预不重置轮次时钟的锚点）。 */
+  hasActive(chatId: string): boolean {
+    return this.states.has(chatId);
+  }
+
   /** 延迟命中后仍未完结 → 发送首卡并启动心跳。 */
   private async ensureCard(chatId: string): Promise<void> {
     const state = this.states.get(chatId);

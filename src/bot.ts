@@ -144,9 +144,11 @@ export class WpsBotCore {
           mention ? [mention] : undefined,
         );
       },
-      onDispatched: (chatId, ev) => {
+      onDispatched: (chatId, ev, route) => {
         this.sessions.setRequester(chatId, { userId: ev.senderId, name: ev.senderName });
-        this.cards.start(chatId); // GA 习惯：任务被 accepted 才开进度卡文体
+        // GA：inject 是进行中任务的干预，不重置轮次时钟；仅当无活卡时才起步
+        if (route === "inject" && this.cards.hasActive(chatId)) return;
+        this.cards.start(chatId);
       },
       logger: { warn: (...args: unknown[]) => this.logger.warn(...args) },
     });

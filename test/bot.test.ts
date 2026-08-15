@@ -31,11 +31,11 @@ class FakeClient implements BotClient {
     this.cardsSent.push({ chatId, markdown, title });
     return `card-${++this.seq}`;
   }
-  async updateCard(messageId: string, markdown: string): Promise<unknown> {
+  async updateCard(messageId: string, markdown: string, _title: string): Promise<Record<string, unknown>> {
     this.updates.push({ messageId, markdown });
     return {};
   }
-  async recallMessage(messageId: string): Promise<unknown> {
+  async recallMessage(messageId: string): Promise<Record<string, unknown>> {
     this.recalls.push(messageId);
     return {};
   }
