@@ -10,6 +10,7 @@ import {
   isSelfEvent,
   mentionMatched,
   type RawMessageEventData,
+  type WpsEvent,
 } from "../src/protocol.ts";
 
 const BOT_IDS = ["app-1", "sp-1", "service-principal-1"];
@@ -166,6 +167,101 @@ test("isSelfEvent：sender.type ∈ {app, sp, service_principal} 且 id/app_id �
   assert.equal(isSelfEvent({ type: "app", id: "outsider" }, BOT_IDS), false);
   assert.equal(isSelfEvent(undefined, BOT_IDS), false);
 });
+
+// ---- WPS 真机 REST 历史接口锚帧（/tmp/wps-bot-e2e）；作为 regression fixture 恢复原状 ----
+const REAL_FRAMES: Array<{ name: string; raw: RawMessageEventData; want: Partial<WpsEvent> | null; eventId: string; botIds: string[] }> = [
+  {
+    name: "sp 自产消息 → 自答过滤",
+    eventId: "2vhBI6irh0tbuwHXtRHw",
+    botIds: ["AK20260508ZSAHCR", "kAWqVoB"],
+    raw: {
+      chat: { id: "91793929", type: "group" },
+      sender: { id: "kAWqVoB", app_id: "AK20260508ZSAHCR", type: "sp", company_id: "lLomJ37" },
+      message: { id: "2vhBI6irh0tbuwHXtRHw", type: "text", content: { text: { content: "[@冯三山](woa://x) 你好！" } } },
+    } as RawMessageEventData,
+    want: null, // null = self event
+  },
+  {
+    name: "sp.card(content=null)：按 content 空兜底（防自答）",
+    eventId: "k2hEIAi0h0tduBHPtYuZ",
+    botIds: ["AK20260508ZSAHCR", "kAWqVoB"],
+    raw: {
+      chat: { id: "91793929", type: "group" },
+      sender: { id: "kAWqVoB", app_id: "AK20260508ZSAHCR", type: "sp" },
+      message: { id: "k2hEIAi0h0tduBHPtYuZ", type: "card", content: null },
+    } as RawMessageEventData,
+    want: null, // 同样被防自答
+  },
+  {
+    name: "image 帧（storage_key 直载）",
+    eventId: "l2hMI2i8hdt1uZTEImh7",
+    botIds: ["AK20260508ZSAHCR", "kAWqVoB"],
+    raw: {
+      company_id: "lLomJ37",
+      chat: { id: "91793929", type: "group" },
+      sender: { id: "3Bj5ABr", type: "user" },
+      message: {
+        id: "l2hMI2i8hdt1uZTEImh7",
+        type: "image",
+        content: { image: { storage_key: "066F", name: "pic.png", size: 2911990, type: "image/png", width: 2380, height: 1392 } },
+      },
+    } as RawMessageEventData,
+    want: { evidenceBearing: true, text: "[attachment-only message]", attachments: [{ kind: "image", storageKey: "066F", name: "pic.png", size: 2911990, mime: "image/png" }] },
+  },
+  {
+    name: "file 帧（file.local.storage_key；非 file.cloud）",
+    eventId: "XVhnIliwhqtDuBTAHWsG",
+    botIds: ["AK20260508ZSAHCR", "kAWqVoB"],
+    raw: {
+      company_id: "lLomJ37",
+      chat: { id: "91793929", type: "group" },
+      sender: { id: "3Bj5ABr", type: "user" },
+      message: {
+        id: "XVhnIliwhqtDuBTAHWsG",
+        type: "file",
+        content: { file: { local: { name: "omp.py", size: 12969, storage_key: "sk" }, type: "local" } },
+      },
+    } as RawMessageEventData,
+    want: { evidenceBearing: true, attachments: [{ kind: "file", storageKey: "sk", name: "omp.py", size: 12969, mime: "" }] },
+  },
+  {
+    name: "@bot 两帧完全一致——identity.id 命中 spId",
+    eventId: "7QhvI7iWh4tzu2HRhAhw",
+    botIds: ["AK20260508ZSAHCR", "kAWqVoB"],
+    raw: {
+      company_id: "lLomJ37",
+      chat: { id: "91793929", type: "group" },
+      sender: { id: "3Bj5ABr", type: "user" },
+      message: {
+        id: "7QhvI7iWh4tzu2HRhAhw",
+        type: "text",
+        content: { text: { content: "<at id=\"1\">甘小雨</at> hello" } },
+        mentions: [{ id: "1", type: "user", identity: { id: "kAWqVoB", type: "sp", name: "甘小雨", company_id: "lLomJ37" } }],
+      },
+    } as RawMessageEventData,
+    want: { mentioned: true, text: "hello" },
+  },
+];
+
+for (const fr of REAL_FRAMES) {
+  test(`真机帧：${fr.name}`, () => {
+    const ev = normalizeEventData(fr.raw, fr.botIds, fr.eventId, "甘小雨");
+    if (fr.want === null) {
+      assert.ok(isSelfEvent(fr.raw.sender, fr.botIds));
+    } else {
+      assert.equal(ev?.mentioned, fr.want.mentioned ?? false);
+      assert.equal(ev?.evidenceBearing, fr.want.evidenceBearing ?? false);
+      if (fr.want.text !== undefined) assert.equal(ev?.text, fr.want.text);
+      if (fr.want.attachments !== undefined) {
+        assert.equal(ev?.attachments.length, fr.want.attachments.length);
+        for (let i = 0; i < fr.want.attachments.length; i++) {
+          assert.equal(ev?.attachments[i]?.kind, fr.want.attachments[i]?.kind);
+          assert.equal(ev?.attachments[i]?.storageKey, fr.want.attachments[i]?.storageKey);
+        }
+      }
+    }
+  });
+}
 
 test("mentionMatched：mentions identity=[all] 强制匹配（不减大意数组的兼容性）", () => {
   const hit = mentionMatched(

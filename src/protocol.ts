@@ -55,7 +55,13 @@ export interface V7MessageContentLike {
   } | null;
   rich_text?: unknown;
 }
-export interface V7MentionIdentityLike { type?: string; id?: string; app_id?: string; name?: string }
+export interface V7MentionIdentityLike {
+  type?: string;
+  id?: string;
+  app_id?: string;
+  name?: string;
+  company_id?: string;
+}
 export interface V7MentionLike {
   id?: string;               // ⚠️ 这是「@ 索引」（"1","2"…），不是 user_id
   type?: string;             // user | all
