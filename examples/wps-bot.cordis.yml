@@ -1,0 +1,23 @@
+# 示例 profile 组合（在 dsh 的 profile 配置目录内使用）。
+#
+# 快速路径（社区通行做法，与 dsh-im-hub README 相同流程）：
+#   dsh plugin --profile wpsbot add @deepseek-ai/dsh-base
+#   dsh plugin --profile wpsbot add dsh-wps-bot
+#   dsh --profile wpsbot
+#
+# 若基于 cordis.patch.yml 自行维护，按下面这个组合启用本插件：
+#   - base profile 覆盖 LLM 与会话/sandbox 骨架（@deepseek-ai/dsh-base）
+#   - 本文件 patch 只写我们自己的行
+#
+# 网约车（必须凭据，从 dsh 的 GUI 设置卡片或 profile env 读走）：
+#   WPS365_CLIENT_ID / WPS365_CLIENT_SECRET / WPS365_SP_ID
+#   WPS365_API_BASE（默认 https://openapi.wps.cn）
+
+name: 'dsh-wps-bot'
+disabled: false
+config:
+  # clientId/process.env 可在 GUI 设置卡片里配：github.com/sanshanya/dsh-wps-bot#config
+  approvalMode: windows
+  cardMode: card
+  personaTitle: 甘小雨
+  # workspaceRoot: /home/you/ws

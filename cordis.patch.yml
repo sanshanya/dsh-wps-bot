@@ -1,0 +1,19 @@
+# dsh-wps-bot bundle patch: insert the WPS 365 bot plugin row.
+#
+# The row is disabled by default. Enable it from the profile's own cordis.patch.yml
+# (or a --patch overlay) with credentials, e.g.:
+#
+#   - id: wps-bot
+#     name: 'dsh-wps-bot'
+#     disabled: false
+#     config:
+#       clientId: !!js process.env.WPS365_CLIENT_ID
+#       clientSecret: !!js process.env.WPS365_CLIENT_SECRET
+#       spId: !!js process.env.WPS365_SP_ID
+#
+# Row id matches the package name style of dsh-* channel plugins.
+- insert:
+    - id: wps-bot
+      name: 'dsh-wps-bot'
+      disabled: true
+      config: {}

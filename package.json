@@ -1,0 +1,62 @@
+{
+  "name": "dsh-wps-bot",
+  "version": "0.0.1",
+  "description": "WPS 365 chat bot channel plugin for DeepSeek Harness (dsh): drive your agent from WPS group chats (open-event-sdk long connection, markdown/cards, consents with timed windows)",
+  "type": "module",
+  "license": "MIT",
+  "author": "sanshanya",
+  "private": false,
+  "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./protocol": "./src/protocol.ts",
+    "./client": "./src/client.ts",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "cordis.patch.yml",
+    "examples",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "open-event-sdk": "^1.0.1"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/dsh-agent": "*",
+    "@deepseek-ai/dsh-llm": "*",
+    "@deepseek-ai/dsh-session": "*",
+    "@deepseek-ai/schemastery": "*"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.0"
+  },
+  "engines": {
+    "node": ">=22.19"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sanshanya/dsh-wps-bot.git"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "cordis",
+    "wps",
+    "wps365",
+    "kingsoft",
+    "channel",
+    "bot"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}
