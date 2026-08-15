@@ -8,11 +8,17 @@
  *  - send_markdown / send_card / update_card / recall_message / send_markdown_split
  *  - resolve_mention
  *  - send_markdown_split 的 mention 只带首段、at_tag(1) 语义
+ *  - download_attachment（/resources/{storage_key}/download → 裸 GET presigned url）
+ *  - upload_file（两段：/chats/resources/upload 分配 sha256 → upload_entry PUT → /messages/create）
+ *  - _image_dimensions（PNG/GIF/JPEG 头解析）
+ *  - _transfer（裸传输；GET 不带 body，非加签面）
  *
  * 与 GA 的差异仅为实现语言（fetch 替 requests），所有 wire 面保持一致。
  *
  * @module dsh-wps-bot/client
  */
+
+import { createHash } from "node:crypto";
 
 import { kso1Signature, ksoDate } from "./signature.ts";
 import { splitMarkdown } from "./split.ts";
@@ -89,6 +95,43 @@ function errorFields(value: Json, fallback = "unknown error"): {
     code: ((value.code ?? value.errcode ?? null) as number | string | null),
     requestId: String(value._request_id ?? value.request_id ?? ""),
   };
+}
+
+/** GA client.py:_image_dimensions 逐字移植（PNG/GIF/JPEG 头部；读不出回 null）。 */
+export function imageDimensions(data: Buffer): { width: number; height: number } | null {
+  if (data.length >= 24 && data.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
+    return { width: data.readUInt32BE(16), height: data.readUInt32BE(20) };
+  }
+  if (data.length >= 10 && data.subarray(0, 3).toString("latin1") === "GIF") {
+    return { width: data.readUInt16LE(6), height: data.readUInt16LE(8) };
+  }
+  if (data.length >= 4 && data[0] === 0xff && data[1] === 0xd8) {
+    let offset = 2;
+    while (offset + 9 < data.length) {
+      if (data[offset] !== 0xff) { offset += 1; continue; }
+      const marker = data[offset + 1]!;
+      const size = data.readUInt16BE(offset + 2);
+      if (marker !== undefined && marker >= 0xc0 && marker <= 0xc3) {
+        return { width: data.readUInt16BE(offset + 7), height: data.readUInt16BE(offset + 5) };
+      }
+      offset += Math.max(size + 2, 2);
+    }
+  }
+  return null;
+}
+
+/** GA upload_file 的后缀→image type 映射（注意 .jpg 真值是 "image/jpg" 非标准串，GA 原样）。 */
+const IMAGE_MIME: Record<string, string> = {
+  ".png": "image/png",
+  ".jpg": "image/jpg",
+  ".jpeg": "image/jpg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+};
+
+function extensionOf(nameDim: string): string {
+  const dot = nameDim.lastIndexOf(".");
+  return dot === -1 ? "" : nameDim.slice(dot).toLowerCase();
 }
 
 export class WpsClient {
@@ -204,6 +247,118 @@ export class WpsClient {
       Authorization: `Bearer ${await this.accessToken()}`,
     });
     return ok(result, operation ?? uri);
+  }
+
+  /** GA _transfer：无加签/Bearer 的裸传输（presigned 资源面）。GET 不带 body。 */
+  private async transfer(
+    method: string,
+    url: string,
+    body: Buffer | undefined,
+    headers: Record<string, string>,
+  ): Promise<Buffer> {
+    const operation = `resource transfer ${method.toUpperCase()}`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    try {
+      const response = await this.fetchImpl(url, {
+        method,
+        headers,
+        body: body !== undefined && body.length > 0 && method.toUpperCase() !== "GET" ? new Uint8Array(body) : undefined,
+        signal: controller.signal,
+      });
+      const raw = Buffer.from(await response.arrayBuffer());
+      if (!response.ok) {
+        let parsed: Json = {};
+        try { parsed = JSON.parse(raw.toString("utf8")) as Json; } catch { /* 文本错误体 */ }
+        const { message, code, requestId } = errorFields(parsed, `HTTP ${response.status}`);
+        throw new WpsApiError(operation, message, {
+          status: response.status,
+          code,
+          requestId: requestId || (response.headers.get("x-request-id") ?? ""),
+        });
+      }
+      return raw;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /** GA download_attachment：换 presigned URL → 裸 GET 字节。 */
+  async downloadAttachment(chatId: string, messageId: string, storageKey: string): Promise<Buffer> {
+    const result = await this.requestJson(
+      "GET",
+      `/v7/chats/${encodeURIComponent(chatId)}/messages/${encodeURIComponent(messageId)}` +
+        `/resources/${encodeURIComponent(storageKey)}/download`,
+      undefined,
+      "get attachment download URL",
+    );
+    const url = (result.data as Json | undefined)?.url;
+    if (!url) {
+      throw new WpsApiError("get attachment download URL", "response missing download url", { code: "invalid_response" });
+    }
+    return this.transfer("GET", String(url), undefined, {});
+  }
+
+  /**
+   * GA upload_file：allocate（sha256）→ upload_entry 传输 → /messages/create 发 image/file。
+   * image 后缀走 image content（尽力补 width/height）；其余走 file.local。
+   */
+  async uploadFile(chatId: string, name: string, data: Buffer): Promise<Json> {
+    const allocation = await this.requestJson(
+      "POST",
+      "/v7/chats/resources/upload",
+      {
+        file_name: name.slice(0, 256),
+        file_size: data.length,
+        checksum: createHash("sha256").update(data).digest("hex"),
+      },
+      "allocate upload",
+    );
+    const info = (allocation.data ?? {}) as Json;
+    const entry = (info.upload_entry ?? {}) as Json;
+    const storageKey = info.storage_key;
+    if (!storageKey || !entry.url) {
+      throw new WpsApiError("allocate upload", "response missing upload entry", { code: "invalid_response" });
+    }
+    let url = String(entry.url);
+    const params = (entry.params ?? {}) as Json;
+    const query = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) query.set(k, String(v));
+    const qs = query.toString();
+    if (qs) url += (url.includes("?") ? "&" : "?") + qs;
+    const headers: Record<string, string> = {};
+    for (const [k, v] of Object.entries((entry.headers ?? {}) as Json)) headers[k] = String(v);
+    await this.transfer(
+      String(entry.method ?? "PUT").toUpperCase(),
+      url,
+      data,
+      headers,
+    );
+
+    const mime = IMAGE_MIME[extensionOf(name)];
+    const content: Json = mime
+      ? {
+          image: {
+            type: mime,
+            thumbnail_type: mime,
+            name,
+            size: data.length,
+            storage_key: String(storageKey),
+            ...(imageDimensions(data) ?? {}),
+          },
+        }
+      : {
+          file: {
+            type: "local",
+            local: { storage_key: String(storageKey), name, size: data.length },
+          },
+        };
+    return this.requestJson(
+      "POST",
+      "/v7/messages/create",
+      { type: mime ? "image" : "file", receiver: { receiver_id: chatId, type: "chat" }, content },
+      mime ? "send image" : "send file",
+    );
   }
 
   getMessages(chatId: string, pageSize = 30, pageToken?: string, startTime?: number): Promise<Json> {

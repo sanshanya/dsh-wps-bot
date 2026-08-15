@@ -8,6 +8,10 @@
  * @module dsh-wps-bot/bot
  */
 
+import { createHash } from "node:crypto";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { basename, join, resolve, sep } from "node:path";
+
 import { WpsClient, type Mention } from "./client.ts";
 import { ProgressCards } from "./card.ts";
 import { ApprovalWindowStore, parseConsent, windowAllows } from "./consent.ts";
@@ -33,8 +37,27 @@ export interface BotSessions {
 /** 运行要求 doc：WpsClient 的 API 浦口；测试用假实现。 */
 export type BotClient = Pick<
   WpsClient,
-  "sendMarkdown" | "sendMarkdownSplit" | "sendCard" | "updateCard" | "recallMessage" | "resolveMention"
+  | "sendMarkdown"
+  | "sendMarkdownSplit"
+  | "sendCard"
+  | "updateCard"
+  | "recallMessage"
+  | "resolveMention"
+  | "downloadAttachment"
+  | "uploadFile"
 >;
+
+/** GA ga_runtime.py:23：`[[attach:路径]]` 交付标记（模型面约定，人写提示词由组合 persona 承载）。 */
+const ATTACH_MARKER = /\[\[attach:([^\]]+)\]\]/g;
+
+/** GA history.attachment_target 的文件名净化：unicode 字母数字 + . _ -，其余 _，截 160。 */
+function safeArtifactName(name: string): string {
+  return name
+    .split("")
+    .map((ch) => (/^[\p{L}\p{N}]$/u.test(ch) || "._-".includes(ch) ? ch : "_"))
+    .join("")
+    .slice(0, 160);
+}
 
 export const ACK_APPROVED = "操作已批准。";
 export const ACK_APPROVED_NO_WINDOW = "操作已批准，但本次未开启自动同意窗口。";
@@ -84,6 +107,8 @@ export interface CoreBotOptions {
     auditPath: string;
     ackInterventionText: string;
     deliverChunks: number;
+    /** 会话工作区根：downloads/ 与 artifacts/ 的父目录（GA workspace 语义）。 */
+    workspaceRoot: string;
   };
 }
 
@@ -193,7 +218,63 @@ export class WpsBotCore {
         throw error;
       }
     }
+    // GA app.py:339：run 前 eager materialize——附件落盘先于分发/排队/注入
+    await this.materializeAttachments(ev);
     return this.router.handleEvent(ev, { preClaimed: true });
+  }
+
+  /**
+   * GA _download_attachments 对位：downloads/{sha256(eventId)[:12]}/{NN}_{safeName|kind}。
+   * 逐附件容错——失败不阻断分发，观察原样进 observations 供 factify 注入（GA:527-531）。
+   */
+  private async materializeAttachments(ev: WpsEvent): Promise<void> {
+    const withKey = ev.attachments.filter((a) => a.storageKey);
+    if (withKey.length === 0) return;
+    const digest = createHash("sha256").update(ev.eventId, "utf8").digest("hex").slice(0, 12);
+    const dir = join(this.cfg.workspaceRoot, "downloads", digest);
+    await mkdir(dir, { recursive: true });
+    let index = 0;
+    for (const attachment of withKey) {
+      index += 1;
+      const target = join(dir, `${String(index).padStart(2, "0")}_${safeArtifactName(attachment.name) || attachment.kind}`);
+      try {
+        const bytes = await this.client.downloadAttachment(ev.chatId, ev.eventId, attachment.storageKey);
+        await writeFile(target, bytes);
+        attachment.localPath = target;
+      } catch (error) {
+        ev.observations.push(
+          `Attachment download failed for ${attachment.name || attachment.kind} at ${target}: ${String(error)}`,
+        );
+      }
+    }
+  }
+
+  /**
+   * GA _ATTACHMENT 收集（ga_runtime.py:272-289）：marker 解析 → 必须在 artifacts 根内的
+   * 现存文件；违规/缺失记 errors（原样上群）；marker 从交付正文剥离。
+   */
+  private extractArtifacts(
+    text: string,
+  ): { cleaned: string; files: Array<{ marker: string; candidate: string }>; errors: string[] } {
+    const workspaceRoot = resolve(this.cfg.workspaceRoot);
+    const artifactRoot = resolve(workspaceRoot, "artifacts");
+    const files: Array<{ marker: string; candidate: string }> = [];
+    const errors: string[] = [];
+    const seenMarkers = new Set<string>();
+    const seenCandidates = new Set<string>();
+    for (const match of text.matchAll(ATTACH_MARKER)) {
+      const marker = (match[1] ?? "").trim();
+      const candidate = resolve(workspaceRoot, marker);
+      if (candidate !== artifactRoot && !candidate.startsWith(artifactRoot + sep)) {
+        if (!seenMarkers.has(marker)) errors.push(`artifact path is outside the deliverable directory: ${marker}`);
+        seenMarkers.add(marker);
+        continue;
+      }
+      if (seenCandidates.has(candidate)) continue;
+      seenCandidates.add(candidate);
+      files.push({ marker, candidate });
+    }
+    return { cleaned: text.replace(ATTACH_MARKER, "").trim(), files, errors };
   }
 
   /** 审批 answerer（prepend waterfall；GA approval.py:86+ 矩阵） */
@@ -322,9 +403,36 @@ export class WpsBotCore {
     }
   }
 
+  /**
+   * GA app.py:372-395 交付序：正文（剥离 attach marker）→ 产物逐个 upload_file →
+   * 交付失败逐条 markdown 通告（同文案:Artifact delivery failed …）。
+   */
   async deliver(chatId: string, text: string): Promise<void> {
     try {
-      await this.client.sendMarkdownSplit(chatId, text, null, this.cfg.deliverChunks);
+      const { cleaned, files, errors } = this.extractArtifacts(text);
+      const deliveryErrors = [...errors];
+      if (cleaned.length > 0 || files.length === 0) {
+        await this.client.sendMarkdownSplit(chatId, cleaned, null, this.cfg.deliverChunks);
+      }
+      for (const { marker, candidate } of files) {
+        const name = basename(candidate);
+        // GA ga_runtime.py:281-282：不存在/非常规文件 = missing 措辞（先于任何上传尝试）
+        const info = await stat(candidate).catch(() => null);
+        if (info === null || !info.isFile()) {
+          deliveryErrors.push(`artifact file does not exist: ${marker}`);
+          continue;
+        }
+        try {
+          await this.client.uploadFile(chatId, name, await readFile(candidate));
+        } catch (error) {
+          deliveryErrors.push(`Artifact delivery failed for ${name}: ${String(error)}`);
+        }
+      }
+      for (const failure of deliveryErrors) {
+        await this.client
+          .sendMarkdownSplit(chatId, failure, null, this.cfg.deliverChunks)
+          .catch((error: unknown) => this.logger.warn("[wps-bot] delivery failure notice failed:", error));
+      }
     } catch (error) {
       this.logger.error("[wps-bot] deliver failed:", error);
     }

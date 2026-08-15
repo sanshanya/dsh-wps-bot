@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -17,8 +18,23 @@ class FakeClient implements BotClient {
   cardsSent: Array<{ chatId: string; markdown: string; title: string }> = [];
   updates: Array<{ messageId: string; markdown: string }> = [];
   recalls: string[] = [];
+  downloads: Array<{ chatId: string; messageId: string; storageKey: string }> = [];
+  uploads: Array<{ chatId: string; name: string; bytes: Buffer }> = [];
+  /** 测验可注错：key=`${messageId}/${storageKey}` → 抛该 Error。 */
+  downloadFailures = new Map<string, Error>();
+  downloadBytes: Buffer = Buffer.from("fake-bytes");
   private seq = 0;
 
+  async downloadAttachment(chatId: string, messageId: string, storageKey: string): Promise<Buffer> {
+    this.downloads.push({ chatId, messageId, storageKey });
+    const failure = this.downloadFailures.get(`${messageId}/${storageKey}`);
+    if (failure !== undefined) throw failure;
+    return this.downloadBytes;
+  }
+  async uploadFile(chatId: string, name: string, data: Buffer): Promise<Record<string, unknown>> {
+    this.uploads.push({ chatId, name, bytes: data });
+    return {};
+  }
   async sendMarkdown(chatId: string, text: string, mentions?: unknown[]): Promise<Record<string, unknown>> {
     this.markdown.push({ chatId, text, mentions: mentions?.length ?? 0 });
     return {};
@@ -63,6 +79,7 @@ interface Rig {
 const SILENT = { info: () => {}, warn: () => {}, error: () => {} };
 
 function makeRig(over: {
+  workspaceRoot?: string;
   cardMode?: "card" | "off";
   cardInitialDelayMs?: number;
   approvalTimeoutMs?: number;
@@ -117,6 +134,7 @@ function makeRig(over: {
       auditPath,
       ackInterventionText: "已收到补充信息，当前任务会在下一轮处理。",
       deliverChunks: 4500,
+      workspaceRoot: over.workspaceRoot ?? join(tmpRoot, "ws"),
     },
   });
   return {
@@ -145,6 +163,7 @@ function ev(over: Partial<WpsEvent> = {}): WpsEvent {
     cloudDocLinks: [],
     sharedDocIds: [],
     unparsed: [],
+    observations: [],
     evidenceBearing: false,
     isPrivate: false,
     ...over,
@@ -608,7 +627,7 @@ test("P0-4 单飞 ensure：同 chatId 并发 direct 只 ensure 一次", async ()
       cardMode: "off", cardTitle: "甘小雨", cardInitialDelayMs: 5000, cardHeartbeatMs: 60000,
       cardUpdateMinIntervalMs: 0, cardSettle: "recall",
       approvalMode: "windows", approvalTimeoutMs: 5000, allowWindow: true,
-      auditPath: "/tmp/wps-bot-mk4-x.jsonl", ackInterventionText: "x", deliverChunks: 4500,
+      auditPath: "/tmp/wps-bot-mk4-x.jsonl", ackInterventionText: "x", deliverChunks: 4500, workspaceRoot: "/tmp/wps-bot-test-ws",
     },
   });
   await Promise.all([
@@ -645,7 +664,7 @@ test("P0-5 审批重放：同一 eventId 只能进 pending 消费链一次", asy
       cardMode: "off", cardTitle: "甘小雨", cardInitialDelayMs: 5000, cardHeartbeatMs: 60000,
       cardUpdateMinIntervalMs: 0, cardSettle: "recall",
       approvalMode: "windows", approvalTimeoutMs: 5000, allowWindow: true,
-      auditPath: "/tmp/wps-p0-5.jsonl", ackInterventionText: "x", deliverChunks: 4500,
+      auditPath: "/tmp/wps-p0-5.jsonl", ackInterventionText: "x", deliverChunks: 4500, workspaceRoot: "/tmp/wps-bot-test-ws",
     },
   });
   // 审批问题挂起
@@ -738,6 +757,7 @@ test("审批 disabled 时全直通", async () => {
         auditPath: rig.auditPath,
         ackInterventionText: "x",
         deliverChunks: 4500,
+        workspaceRoot: "/tmp/wps-bot-test-ws",
       },
     });
     let calls = 0;
@@ -755,4 +775,73 @@ test("审批 disabled 时全直通", async () => {
   } finally {
     await rig.cleanup();
   }
+});
+
+test("materialize：私聊带附件 → 落盘 downloads/{digest}/NN_name + factify 给出路径", async (t) => {
+  const rig = makeRig();
+  t.after(async () => { await rig.core.shutdown(); await rig.cleanup(); });
+  const ws = join(rig.tmpdir, "ws");
+  const message = ev({
+    isPrivate: true,
+    attachments: [{ kind: "image", storageKey: "sk1", name: "p x.png", size: 3, mime: "image/png" }],
+  });
+  const route = await rig.core.handleIncomingEvent(message);
+  assert.equal(route, "enqueue");
+
+  assert.deepEqual(rig.client.downloads, [{ chatId: "c1", messageId: message.eventId, storageKey: "sk1" }]);
+  const digest = createHash("sha256").update(message.eventId, "utf8").digest("hex").slice(0, 12);
+  // GA safeArtifactName：空格非 alnum → _（03-a 文档实锤：与 protocol.history.attachment_target 同规）
+  const expected = join(ws, "downloads", digest, "01_p_x.png");
+  assert.equal(message.attachments[0]!.localPath, expected);
+  assert.equal(await readFile(expected, "utf8"), "fake-bytes");
+  assert.ok(rig.handle.followupLog[0]!.includes(`附件 p x.png → ${expected}`));
+});
+
+test("materialize：下载失败不阻断分发——observation 原样进 factify", async (t) => {
+  const rig = makeRig();
+  t.after(async () => { await rig.core.shutdown(); await rig.cleanup(); });
+  const message = ev({
+    isPrivate: true,
+    attachments: [{ kind: "file", storageKey: "sk-bad", name: "a.py", size: 1, mime: "" }],
+  });
+  rig.client.downloadFailures.set(`${message.eventId}/sk-bad`, new Error("404 gone"));
+  const route = await rig.core.handleIncomingEvent(message);
+  assert.equal(route, "enqueue");
+  assert.equal(message.attachments[0]!.localPath, undefined);
+  assert.match(message.observations[0] ?? "", /^Attachment download failed for a\.py at .*: Error: 404 gone$/);
+  assert.ok(rig.handle.followupLog[0]!.includes("Attachment download failed for a.py"));
+  assert.ok(rig.handle.followupLog[0]!.includes("附件 a.py（未落盘）"));
+});
+
+test("deliver：[[attach:artifacts/*]] marker 上传+剥离；越界/缺失逐条通告", async (t) => {
+  const rig = makeRig();
+  t.after(async () => { await rig.core.shutdown(); await rig.cleanup(); });
+  const ws = join(rig.tmpdir, "ws");
+  await mkdir(join(ws, "artifacts"), { recursive: true });
+  await writeFile(join(ws, "artifacts", "report.txt"), "REPORT-BYTES");
+  await writeFile(join(ws, "outside.txt"), "EVIL");
+
+  await rig.core.deliver(
+    "c1",
+    "看结果 [[attach:artifacts/report.txt]] [[attach:../outside.txt]] [[attach:artifacts/ghost.txt]]",
+  );
+  // 正文剥离 marker 后交付
+  assert.equal(rig.client.splits[0]!.text, "看结果");
+  // 合法产物上传（名字+字节）
+  assert.deepEqual(
+    rig.client.uploads.map((u) => [u.name, u.bytes.toString()]),
+    [["report.txt", "REPORT-BYTES"]],
+  );
+  // 越界与缺失各一条通告，措辞同 GA
+  const notices = rig.client.splits.slice(0xa - 0x9).map((x) => x.text);
+  assert.ok(notices.some((x) => x.includes("artifact path is outside the deliverable directory: ../outside.txt")));
+  assert.ok(notices.some((x) => x.includes("artifact file does not exist: artifacts/ghost.txt")));
+});
+
+test("deliver：空应答+无 attach marker → 原样交付（不上传）", async (t) => {
+  const rig = makeRig();
+  t.after(async () => { await rig.core.shutdown(); await rig.cleanup(); });
+  await rig.core.deliver("c1", "普通回答");
+  assert.equal(rig.client.splits[0]!.text, "普通回答");
+  assert.equal(rig.client.uploads.length, 0);
 });

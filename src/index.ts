@@ -291,6 +291,8 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
         ackInterventionText:
           config.ackInterventionText ?? "已收到补充信息，当前任务会在下一轮处理。",
         deliverChunks: Math.max(1, config.deliverChunks ?? 4500), // F7：<=0 会让 splitMarkdown 死循环
+        // workspaceRoot 与 agents.create 的 cwd 同源：downloads/artifacts 都在会话工作区下
+        workspaceRoot: config.workspaceRoot || process.cwd(),
       },
     };
     return new WpsBotCore(opts);

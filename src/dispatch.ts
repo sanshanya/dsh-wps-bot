@@ -49,8 +49,10 @@ export type Route = "inject" | "enqueue" | "duplicate" | "drop";
 export function defaultFactify(ev: WpsEvent): string {
   const head = `[WPS 任务 | chat ${ev.chatType || "group"}/${ev.chatId} | requester ${ev.senderName}(${ev.senderId})]`;
   const parts: string[] = [];
-  if (ev.attachments.length > 0)
-    parts.push(`附件 ×${ev.attachments.length}（暂不下注端点内容，按后续技能处理）`);
+  // GA live-attachments：已落盘附件给模型可读路径（materialize 先于分发并完成注入）
+  for (const a of ev.attachments)
+    parts.push(a.localPath ? `附件 ${a.name || a.kind} → ${a.localPath}` : `附件 ${a.name || a.kind}（未落盘）`);
+  for (const obs of ev.observations) parts.push(obs);
   if (ev.cloudDocLinks.length > 0) parts.push(`云文档 ${ev.cloudDocLinks.join(" ")}`);
   if (ev.unparsed.length > 0) parts.push(`未解析节点 ×${ev.unparsed.length}（非文本证据消息）`);
   const body = ev.text.trim();

@@ -20,6 +20,7 @@ function ev(over: Partial<WpsEvent> = {}): WpsEvent {
     cloudDocLinks: [],
     sharedDocIds: [],
     unparsed: [],
+    observations: [],
     evidenceBearing: false,
     isPrivate: false,
     ...over,
@@ -182,14 +183,27 @@ test("分诊矩阵：followup 失败 → 补充回队首，不重释已投递", 
   assert.equal(handle.followupLog.length, 0); // 第二次成功无日志，只计 not throw
 });
 
-test("defaultFactify：head 含 chat/requester，文本空且带 evidence → 落占位行", () => {
+test("defaultFactify：head 含 chat/requester，未落盘附件落占位行 + observations 原样进面", () => {
   const out = defaultFactify(
     ev({
       text: "",
       evidenceBearing: true,
       attachments: [{ kind: "file", storageKey: "s", name: "a", size: 0, mime: "" }],
+      observations: ["Attachment download failed for a at /x: boom"],
     }),
   );
   assert.ok(out.includes("[WPS 任务 |"));
-  assert.ok(out.includes("附件 ×1"));
+  assert.ok(out.includes("附件 a（未落盘）"));
+  assert.ok(out.includes("Attachment download failed for a at /x: boom"));
+});
+
+test("defaultFactify：已落盘附件给模型可读路径（GA downloads 语用）", () => {
+  const out = defaultFactify(
+    ev({
+      text: "",
+      attachments: [{ kind: "image", storageKey: "s", name: "p.png", size: 3, mime: "image/png", localPath: "/ws/downloads/d41/01_p.png" }],
+    }),
+  );
+  assert.ok(out.includes("附件 p.png → /ws/downloads/d41/01_p.png"));
+  assert.ok(!out.includes("未落盘"));
 });

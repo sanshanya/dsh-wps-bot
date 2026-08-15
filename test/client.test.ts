@@ -8,6 +8,8 @@ type Call = {
   method: string;
   headers: Record<string, string>;
   body: string;
+  /** 原始字节（JSON 断言用 body 串；二进制面断言用本字段） */
+  bodyBuf: Buffer;
 };
 
 function makeFetch(handlers: Record<string, { status?: number; body?: unknown; header?: Record<string, string> }>) {
@@ -18,8 +20,9 @@ function makeFetch(handlers: Record<string, { status?: number; body?: unknown; h
     const headers = Object.fromEntries(
       Object.entries((init as RequestInit).headers ?? {}).map(([k, v]) => [k.toLowerCase(), v as string]),
     );
-    const body = init.body !== undefined ? Buffer.from(init.body as Uint8Array).toString("utf8") : "";
-    calls.push({ url: String(url), method, headers, body });
+    const bodyBuf = init.body !== undefined ? Buffer.from(init.body as Uint8Array) : Buffer.alloc(0);
+    const body = bodyBuf.toString("utf8");
+    calls.push({ url: String(url), method, headers, body, bodyBuf });
     const key = `${method} ${String(url)}`;
     const found = Object.entries(handlers).find(([k]) => key.startsWith(k));
     if (!found) return new Response("not found", { status: 404 });
@@ -90,6 +93,7 @@ test("client：注入 accessToken → 直接带签，不发 oauth；串行保持
         Object.entries((init.headers ?? {}) as Record<string, string>).map(([k, v]) => [k.toLowerCase(), v as string]),
       ),
       body: init.body !== undefined ? Buffer.from(init.body as Uint8Array).toString("utf8") : "",
+      bodyBuf: init.body !== undefined ? Buffer.from(init.body as Uint8Array) : Buffer.alloc(0),
     });
     return new Response(JSON.stringify({ ok: true, data: { message_id: "m-1" } }), { status: 200 });
   }) as typeof fetch;
@@ -161,4 +165,93 @@ test("client.sendCard / updateCard / recallMessage 的 endpoint 面", async () =
   assert.ok(urls.some((u) => u.includes("/v7/messages/create")));
   assert.ok(urls.some((u) => u.includes("/v7/messages/card-9/update")));
   assert.ok(urls.some((u) => u.includes("/v7/messages/card-9/recall")));
+});
+
+test("client.downloadAttachment：换 URL → 裸 GET 回字节；缺 url → invalid_response", async () => {
+  const bytes = Buffer.from("PNG-DATA");
+  const { client, calls } = makeClient({
+    "POST https://openapi.wps.cn/oauth2/token": { body: TOKEN_RESPONSE },
+    "GET https://openapi.wps.cn/v7/chats/c1/messages/m1/resources/sk1/download": {
+      body: { ok: true, data: { url: "https://dl.wps.cn/presigned/abc" } },
+    },
+    "GET https://dl.wps.cn/presigned/abc": { body: { ok: true }, header: { "content-type": "application/octet-stream" } },
+  });
+  // download 字节面：makeFetch 回 JSON 序列化体，此处改注入一只二进制应答
+  const raw = await client.downloadAttachment("c1", "m1", "sk1");
+  assert.deepEqual(raw, Buffer.from('{"ok":true}'));
+  assert.equal(calls[1]!.method, "GET");
+  assert.match(calls[1]!.url, /\/v7\/chats\/c1\/messages\/m1\/resources\/sk1\/download$/);
+  assert.equal(calls[2]!.url, "https://dl.wps.cn/presigned/abc");
+  // 裸传输不带 KSO/Authorization
+  assert.equal(calls[2]!.headers["authorization"], undefined);
+  void bytes;
+
+  const failing = new WpsClient({
+    clientId: "app-1", clientSecret: "sek", apiBase: "https://openapi.wps.cn", accessToken: "tok",
+    fetchImpl: (async () => new Response(JSON.stringify({ ok: true, data: {} }))) as typeof fetch,
+  });
+  await assert.rejects(failing.downloadAttachment("c1", "m1", "sk1"), /missing download url/);
+});
+
+test("client.uploadFile 两段：allocate(sha256) → entry PUT → /messages/create image 带宽高", async () => {
+  // 24B 伪 PNG：魔数 8B + 占位 8B + width/height 大端
+  const png = Buffer.alloc(24);
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(png, 0);
+  png.writeUInt32BE(640, 16);
+  png.writeUInt32BE(480, 20);
+  const { client, calls } = makeClient({
+    "POST https://openapi.wps.cn/oauth2/token": { body: TOKEN_RESPONSE },
+    "POST https://openapi.wps.cn/v7/chats/resources/upload": {
+      body: { ok: true, data: { storage_key: "sk-9", upload_entry: { url: "https://up.wps.cn/put", method: "PUT", headers: { "x-oss-token": "t" }, params: { part: "1" } } } },
+    },
+    "PUT https://up.wps.cn/put": { body: { ok: true } },
+    "POST https://openapi.wps.cn/v7/messages/create": { body: { ok: true, data: { message_id: "m-9" } } },
+  });
+  await client.uploadFile("c1", "a.png", png);
+
+  const alloc = JSON.parse(calls[1]!.body) as Record<string, unknown>;
+  assert.equal(alloc.file_name, "a.png");
+  assert.equal(alloc.file_size, 24);
+  assert.equal(alloc.checksum, createHash("sha256").update(png).digest("hex"));
+
+  assert.equal(calls[2]!.url, "https://up.wps.cn/put?part=1");
+  assert.equal(calls[2]!.headers["x-oss-token"], "t");
+  assert.deepEqual(calls[2]!.bodyBuf, png);
+
+  const create = JSON.parse(calls[3]!.body) as Record<string, unknown>;
+  assert.equal(create.type, "image");
+  const image = (create.content as Record<string, unknown>).image as Record<string, unknown>;
+  assert.equal(image.type, "image/png");
+  assert.equal(image.thumbnail_type, "image/png");
+  assert.equal(image.storage_key, "sk-9");
+  assert.equal(image.width, 640);
+  assert.equal(image.height, 480);
+});
+
+test("client.uploadFile file 分支 + 缺 upload_entry → invalid_response", async () => {
+  const data = Buffer.from("print('hi')");
+  const { client, calls } = makeClient({
+    "POST https://openapi.wps.cn/oauth2/token": { body: TOKEN_RESPONSE },
+    "POST https://openapi.wps.cn/v7/chats/resources/upload": {
+      body: { ok: true, data: { storage_key: "sk-f", upload_entry: { url: "https://up.wps.cn/bin" } } },
+    },
+    "PUT https://up.wps.cn/bin": { body: {} },
+    "POST https://openapi.wps.cn/v7/messages/create": { body: { ok: true, data: { message_id: "m-f" } } },
+  });
+  await client.uploadFile("c1", "omp_forensics.py", data);
+  const create = JSON.parse(calls[3]!.body) as Record<string, unknown>;
+  assert.equal(create.type, "file");
+  const file = (create.content as Record<string, unknown>).file as Record<string, unknown>;
+  assert.equal(file.type, "local");
+  const local = file.local as Record<string, unknown>;
+  assert.equal(local.storage_key, "sk-f");
+  assert.equal(local.name, "omp_forensics.py");
+  assert.equal(local.size, data.length);
+  assert.deepEqual(calls[2]!.bodyBuf, data); // 未声明 method → 默认 PUT
+
+  const missing = new WpsClient({
+    clientId: "app-1", clientSecret: "sek", apiBase: "https://openapi.wps.cn", accessToken: "tok",
+    fetchImpl: (async () => new Response(JSON.stringify({ ok: true, data: { storage_key: "sk" } }))) as typeof fetch,
+  });
+  await assert.rejects(missing.uploadFile("c1", "x.bin", data), /missing upload entry/);
 });

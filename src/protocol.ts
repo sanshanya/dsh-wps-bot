@@ -22,6 +22,8 @@ export interface Attachment {
   name: string;
   size: number;
   mime: string;
+  /** 本队下载落盘路径（bot.ts materializeAttachments 填充；GA downloads/ 目录语用）。 */
+  localPath?: string;
 }
 export interface UnparsedNode { path: string; reason: string; value: unknown }
 export interface ParsedContent {
@@ -102,6 +104,8 @@ export interface WpsEvent {
   cloudDocLinks: string[];
   sharedDocIds: string[];
   unparsed: UnparsedNode[];
+  /** 运行期观察（附件下载失败等；GA runtime_observations 对位，原样进模型面）。 */
+  observations: string[];
   evidenceBearing: boolean;
   isPrivate: boolean;
 }
@@ -445,6 +449,7 @@ export function normalizeEventData(
     cloudDocLinks: parsed.cloudDocLinks,
     sharedDocIds: parsed.sharedDocIds,
     unparsed: parsed.unparsed,
+    observations: [],
     evidenceBearing: parsed.evidenceBearing,
     isPrivate: String(data?.chat?.type ?? "") === "p2p",
   };

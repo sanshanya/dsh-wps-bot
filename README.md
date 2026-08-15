@@ -65,7 +65,7 @@ export WPS365_SP_ID=...
 npm test
 ```
 
-73 个用例（签名 / 分段 / 同意 / 幂等 / 协议 / 分发 / 卡片 / 宿主无关核心全链路 19 例 + 宿主接线纯函数 + cordis E2E + client 出站 wire 面），全部为纯 `node --test` + 假实现替身，运行不需要 WPS 凭据。协议层带**真机 REST 历史帧 regression fixture**（sp 自答 text/card、image `storage_key`、file.local、`@bot` identity 命中），防止 wire 面解析悄悄漂移。与真实 WPS 租户的真实联通验证属于产品发布通路（roadmap 第 2 项）。
+81 个用例（签名 / 分段 / 同意 / 幂等 / 协议 / 分发 / 卡片 / 宿主无关核心全链路 19 例 + 宿主接线纯函数 + cordis E2E + client 出站 wire 面），全部为纯 `node --test` + 假实现替身，运行不需要 WPS 凭据。协议层带**真机 REST 历史帧 regression fixture**（sp 自答 text/card、image `storage_key`、file.local、`@bot` identity 命中），防止 wire 面解析悄悄漂移。与真实 WPS 租户的真实联通验证属于产品发布通路（roadmap 第 2 项）。
 
 `node --test` 依赖 Node ≥ 22.6 的 type stripping；`npm run typecheck`（`tsc --noEmit` strict）须 0 错。协议解析的权威顺序在 src/protocol.ts 头注：**真机帧 > GA `protocol.py:132-370` > wps-docs 官方文档 > open-event-sdk `.d.ts`**——`.d.ts` 曾在 `content.text` 键型上说错话（真机是对象不是字符串），只当线索不当真值。
 
@@ -95,16 +95,16 @@ npm run budget:tokens   # 门禁（超基线任一 bucket 或 total → exit 1�
 | 面 | GA | 本仓现状 |
 |---|---|---|
 | 入站解析归一 | protocol.py 全节点集 | ✅ 全量 + 真帧 fixture 背书 |
-| 入站字节 | run 前 eager download 全部附件 → `downloads/` + observations 入提示词 | ❌ 只注入「附件 ×N」占位，模型拿不到内容 |
-| 出站文件 | `result.files` 逐个 `upload_file`（两段：`POST /v7/chats/resources/upload` 分配 sha256 → PUT 字节 → 按后缀发 image/file 消息） | ❌ 无 upload API |
+| 入站字节 | run 前 eager download 全部附件 → `downloads/` + observations 入提示词 | ✅ `bot.materializeAttachments`（`downloads/{sha256(eventId)[:12]}/NN_name`，失败观察原文进面） |
+| 出站文件 | `result.files` 逐个 `upload_file`（两段：`POST /v7/chats/resources/upload` 分配 sha256 → PUT 字节 → 按后缀发 image/file 消息） | ✅ `client.uploadFile` + `[[attach:artifacts/*]]` marker（越界/缺失逐条群通告，GA 同文案） |
 | 多模态本体 | 经 dsh 桥间接收 | ➖ dsh-llm `ContentBlock` 已有 image 语义块 + provider 能力门（message.ts image admission），通道已备 |
 
 v1 增件拆分（按依赖排序，每步独立可验）：
 
-1. `client.downloadAttachment` / `client.uploadFile`——GA 端点逐字移植，假 fetch 锁 wire；
-2. 入站：`dispatch` 前下载到 `${workspaceRoot}/downloads/{chatId}/{eventId}/{idx}-{name}`，factify 注入本地路径清单（对位 GA observations）；
-3. 出站：turn settle 时扫描 `${workspaceRoot}/artifacts/` 的新文件并上传（GA `result.files` 的 dsh 对位）；
-4. 透传策略：image 且 provider admission 放行 → image 内容块；否则交路径、模型经 fs/pwsh 工具读。
+1. ✅ `client.downloadAttachment` / `client.uploadFile`+`imageDimensions`——GA 端点逐字移植，假 fetch 锁 wire（client.test 4 例）；
+2. ✅ 入站：`materialize` 下载到 `${workspaceRoot}/downloads/{sha256(eventId)[:12]}/{NN}_{safeName|kind}`，factify 注入本地路径+失败观察（bot.test 2 例）；
+3. ✅ 出站：deliver 时剥 `[[attach:artifacts/*]]` marker 并逐个上传（GA marker 收集的 dsh 对位；组合 persona 承载约定行）；
+4. ⬜ 透传策略：image 且 provider admission 放行 → image 内容块；否则交路径、模型经 fs/pwsh 工具读。
 
 ## Roadmap（先打通产品闭环，再做抛光）
 
