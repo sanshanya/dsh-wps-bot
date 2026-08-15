@@ -1,12 +1,8 @@
 /**
  * dsh-wps-bot —— WPS 365 聊天通道（cordis 宿主插件）。
  *
- * 形态归属：ksbot_ga 形态A 的「open-event-sdk 长连接 + 通道调度 + 卡片/审批」合并入单进程 TS 插件。
- *  - 事件入站：open-event-sdk（与 GA bridge 同 wire）
- *  - 分诊：ksbot_ga/src/ga_wps/app.py（dispatch.ts）
- *  - 卡片：ksbot_ga/src/ga_wps/progress.py（card.ts）
- *  - 审批窗：ksbot_ga/src/ga_wps/approval.py（consent.ts + prepend waterfall）
- *  - 回包：ksbot_ga/src/ga_wps/client.py（client.ts）
+ * 本文件只做 cordis 接线（schema、agents.create、ctx.on、ctx.effect、boot 过程、
+ * open-event-sdk 长连接）；所有可测语义都在 ./bot.ts（WpsBotCore）与各纯模块。
  *
  * @module dsh-wps-bot
  */
@@ -20,16 +16,19 @@ import { SessionId } from "@deepseek-ai/dsh-session";
 
 import { WpsClient } from "./client.ts";
 import { EventDedup } from "./dedup.ts";
-import { ProgressCards } from "./card.ts";
-import { ApprovalWindowStore, parseConsent, windowAllows } from "./consent.ts";
-import { appendApprovalAudit, autoAllowEntry, type ApprovalAuditEntry } from "./audit.ts";
 import {
   normalizeEventData,
   isSelfEvent,
   type RawMessageEventData,
   type WpsEvent,
 } from "./protocol.ts";
-import { WpsRouter, type ChatSessionHandle } from "./dispatch.ts";
+import type { ChatSessionHandle } from "./dispatch.ts";
+import {
+  WpsBotCore,
+  type CoreBotOptions,
+  type AgentSessionLike,
+  type ApprovalOutcome,
+} from "./bot.ts";
 
 export const name = "wps-bot";
 export const inject = ["agents"];
@@ -83,16 +82,6 @@ export const Config: Schema<WpsBotConfig> = Schema.object({
   deliverChunks: Schema.number().default(4500),
 });
 
-/** 默认文案与 GA 对应（approval.py:120-128）。 */
-const ACK_APPROVED = "操作已批准。";
-const ACK_APPROVED_NO_WINDOW = "操作已批准，但本次未开启自动同意窗口。";
-const ACK_DECLINED = "操作已取消，意见将交给模型继续处理。";
-const ACK_TIMEOUT = "审批超时未获答复，本次操作已取消。";
-const ACK_APPROVED_WINDOW = (n: number) => `操作已批准，并开启 ${n} 分钟自动同意窗口。`;
-
-interface AgentSessionLike {
-  id?: string;
-}
 interface AgentHandleInner {
   followup(message: unknown): unknown;
   inject(message: unknown): unknown;
@@ -104,41 +93,15 @@ interface AgentHandleLike {
   dispose(): Promise<unknown>;
   session?: AgentSessionLike;
 }
-interface ApprovalRequestLike {
-  agent?: unknown;
-  toolName?: string;
-  callId?: string;
-  reason?: string;
-  signal?: { aborted: boolean };
-}
-type ApprovalOutcomeLiteral = "allowed-once" | "rejected" | "cancelled" | "unavailable";
 
 interface ChatEntry {
   chatId: string;
   handle?: AgentHandleLike;
   requester?: { userId: string; name: string };
 }
-interface PendingApproval {
-  userId: string;
-  resolve: (
-    reply: { kind: "reply"; text: string } | { kind: "timeout" } | { kind: "cancelled" },
-  ) => void;
-  timer: NodeJS.Timeout;
-}
-
-type ReplyEvent =
-  | { kind: "reply"; text: string }
-  | { kind: "timeout" }
-  | { kind: "cancelled" };
-
-/** GA ga_handler.py:146：fail_closed 一律不开窗（消费方生成 [gate-source=] 前缀与生产方的锚）。 */
-function allowsWindowForReason(reason: string | undefined): boolean {
-  if (typeof reason !== "string") return true;
-  return !reason.startsWith("[gate-source=fail_closed]");
-}
 
 export function apply(rawCtx: Context, config: WpsBotConfig): void {
-  const ctx = rawCtx as any;
+  const ctx: any = rawCtx;
   const logger = ctx.logger ?? console;
 
   const clientId = config.clientId || process.env.WPS365_CLIENT_ID || "";
@@ -157,19 +120,10 @@ export function apply(rawCtx: Context, config: WpsBotConfig): void {
     accessToken: config.accessToken ?? "",
   });
   const botIds = [clientId, spId];
-  const cardTitle = config.personaTitle ?? "甘小雨";
-  const auditPath = config.auditPath ?? "runtime/wps-bot-approval.jsonl";
-  const approvalTimeoutMs = Math.max(1000, (config.approvalTimeoutSeconds ?? 300) * 1000);
-  const ackInterventionText =
-    config.ackInterventionText ?? "已收到补充信息，当前任务会在下一轮处理。";
 
-  const store = new ApprovalWindowStore();
+  // ---- 每 chat 的会话句柄与 requester 注册 ----
+
   const chats = new Map<string, ChatEntry>();
-  const pendings = new Map<string, PendingApproval>();
-  let dedup: EventDedup | null = null;
-  let eventClient: WpsEventClient | undefined;
-
-  // ---- 会话句柄 ----
 
   function wrap(chatId: string, handle: AgentHandleLike): ChatSessionHandle {
     const userMessage = (text: string) =>
@@ -194,14 +148,14 @@ export function apply(rawCtx: Context, config: WpsBotConfig): void {
   async function ensure(chatId: string): Promise<ChatSessionHandle> {
     let entry = chats.get(chatId);
     if (entry !== undefined && entry.handle !== undefined) return wrap(chatId, entry.handle);
-    const handle = await ctx.agents.create({
+    const handle = (await ctx.agents.create({
       sessionId: SessionId(`wps-bot:${chatId}`),
       meta: { cwd: config.workspaceRoot || process.cwd() },
       agentOptions: {
         provider: config.provider ?? "deepseek-official",
         model: config.model ?? "deepseek-v4-flash",
       },
-    });
+    })) as AgentHandleLike;
     if (entry === undefined) {
       entry = { chatId };
       chats.set(chatId, entry);
@@ -233,266 +187,66 @@ export function apply(rawCtx: Context, config: WpsBotConfig): void {
     return null;
   }
 
-  // ---- 卡片 / 调度 ----
+  let dedup: EventDedup | null = null;
+  let core: WpsBotCore | null = null;
+  let eventClient: WpsEventClient | undefined;
 
-  const cards = new ProgressCards({
-    client,
-    title: cardTitle,
-    initialDelayMs: Math.max(0, (config.cardInitialDelaySeconds ?? 5) * 1000),
-    heartbeatMs: Math.max(1000, (config.cardHeartbeatSeconds ?? 120) * 1000),
-    updateMinIntervalMs: Math.max(0, (config.cardUpdateMinIntervalSeconds ?? 2) * 1000),
-    settle: config.cardSettle === "update" ? "update" : "recall",
-    mode: config.cardMode === "off" ? "off" : "card",
-    logger,
-  });
+  // ---- 事件订阅核心接线 ----
 
-  const router = new WpsRouter({
-    get dedup() {
-      return dedup!;
-    },
-    ensure,
-    ackIntervention: async (chatId, senderUserId, senderName) => {
-      const mention = await client.resolveMention(senderUserId, senderName).catch(() => null);
-      await client.sendMarkdown(chatId, ackInterventionText, mention ? [mention] : undefined);
-    },
-    onDispatched: (chatId, ev) => {
-      const entry = chats.get(chatId);
-      if (entry !== undefined) {
-        entry.requester = { userId: ev.senderId, name: ev.senderName };
-      }
-    },
-    logger: { warn: (...args: unknown[]) => logger.warn(...args) },
-  });
-
-  // ---- 审批 ----
-
-  async function askApproval(
-    req: ApprovalRequestLike,
-    next: () => Promise<ApprovalOutcomeLiteral>,
-  ): Promise<ApprovalOutcomeLiteral> {
-    if (config.approvalMode === "disabled") return next();
-    if (req.signal?.aborted) return "cancelled";
-    const chatId = chatForAgent(req.agent);
-    if (chatId === null) return next();
-    const entry = chats.get(chatId);
-    const requester = entry?.requester;
-    if (requester === undefined) return next();
-
-    const allowWindow =
-      config.allowWindow !== false && allowsWindowForReason(req.reason);
-    if (allowWindow && windowAllows(store, chatId, requester.userId, allowWindow)) {
-      try {
-        await appendApprovalAudit(
-          auditPath,
-          autoAllowEntry({
-            chatId,
-            userId: requester.userId,
-            review: req.reason,
-            reason: req.reason,
-            toolName: req.toolName,
-            callId: req.callId,
-            windowExpiresAt: store.expiresAt(chatId, requester.userId) ?? undefined,
-          }),
-        );
-        return "allowed-once";
-      } catch {
-        return next(); // 审计写失败 → 降级回群问（未记账的自动答允不得出闸）
-      }
-    }
-
-    const mention = await client
-      .resolveMention(requester.userId, requester.name)
-      .catch(() => null);
-    const reason = String(req.reason ?? "");
-    try {
-      await client.sendMarkdownSplit(
-        chatId,
-        consentPrompt(reason, allowWindow),
-        mention,
-        config.deliverChunks ?? 4500,
-      );
-    } catch (error) {
-      logger.warn("[wps-bot] approval question send failed:", error);
-      return next();
-    }
-    void cards.phase(chatId, { phase: "等待人工审批" });
-
-    const reply = await waitReply(chatId, requester.userId, approvalTimeoutMs);
-    const decision = decide(reply, allowWindow, chatId, requester.userId, reason);
-    await appendApprovalAudit(auditPath, decision.audit).catch((error: unknown) => {
-      logger.warn("[wps-bot] audit append failed:", error);
-    });
-    if (decision.ackText) {
-      await client
-        .sendMarkdown(chatId, decision.ackText, mention ? [mention] : undefined)
-        .catch(() => undefined);
-    }
-    return decision.outcome;
-  }
-
-  function waitReply(chatId: string, userId: string, timeoutMs: number): Promise<ReplyEvent> {
-    return new Promise((resolve) => {
-      const timer = setTimeout(() => {
-        pendings.delete(chatId);
-        resolve({ kind: "timeout" });
-      }, timeoutMs);
-      pendings.set(chatId, {
-        userId,
-        resolve: (reply) => {
-          clearTimeout(timer);
-          pendings.delete(chatId);
-          resolve(reply);
+  function buildCore(d: EventDedup): WpsBotCore {
+    const opts: CoreBotOptions = {
+      client,
+      logger: logger as CoreBotOptions["logger"],
+      dedup: d,
+      sessions: {
+        ensure,
+        setRequester: (chatId, r) => {
+          const entry = chats.get(chatId);
+          if (entry !== undefined) entry.requester = r;
         },
-        timer,
-      });
-    });
-  }
-
-  function decide(
-    reply: ReplyEvent,
-    allowWindow: boolean,
-    chatId: string,
-    userId: string,
-    reason: string,
-  ): { outcome: ApprovalOutcomeLiteral; ackText: string | null; audit: ApprovalAuditEntry } {
-    const timestamp = Math.floor(Date.now() / 1000);
-    if (reply.kind === "cancelled") {
-      return {
-        outcome: "cancelled",
-        ackText: null,
-        audit: {
-          timestamp,
-          kind: "reply-resolution",
-          auditOutcome: "cancelled",
-          chatId,
-          userId,
-          approved: false,
-          reason,
-        },
-      };
-    }
-    if (reply.kind === "timeout") {
-      return {
-        outcome: "rejected",
-        ackText: ACK_TIMEOUT,
-        audit: {
-          timestamp,
-          kind: "reply-resolution",
-          auditOutcome: "timeout",
-          chatId,
-          userId,
-          approved: false,
-          reason,
-        },
-      };
-    }
-    const minutes = parseConsent(reply.text);
-    if (minutes === null) {
-      return {
-        outcome: "rejected",
-        ackText: ACK_DECLINED,
-        audit: {
-          timestamp,
-          kind: "reply-resolution",
-          auditOutcome: "decision",
-          chatId,
-          userId,
-          approved: false,
-          reason,
-          feedback: reply.text,
-        },
-      };
-    }
-    if (minutes > 0 && allowWindow) {
-      const windowExpiresAt = store.grant(chatId, userId, minutes);
-      return {
-        outcome: "allowed-once",
-        ackText: ACK_APPROVED_WINDOW(minutes),
-        audit: {
-          timestamp,
-          kind: "reply-resolution",
-          auditOutcome: "decision",
-          chatId,
-          userId,
-          approved: true,
-          reason,
-          windowExpiresAt,
-          grantMinutes: minutes,
-        },
-      };
-    }
-    return {
-      outcome: "allowed-once",
-      ackText: minutes > 0 ? ACK_APPROVED_NO_WINDOW : ACK_APPROVED,
-      audit: {
-        timestamp,
-        kind: "reply-resolution",
-        auditOutcome: "decision",
-        chatId,
-        userId,
-        approved: true,
-        reason,
-        ...(minutes > 0 ? { grantMinutes: minutes } : {}),
+        getRequester: (chatId) => chats.get(chatId)?.requester,
+      },
+      chatForSessionId,
+      chatForAgent,
+      config: {
+        cardMode: config.cardMode === "off" ? "off" : "card",
+        cardTitle: config.personaTitle ?? "甘小雨",
+        cardInitialDelayMs: Math.max(0, (config.cardInitialDelaySeconds ?? 5) * 1000),
+        cardHeartbeatMs: Math.max(1000, (config.cardHeartbeatSeconds ?? 120) * 1000),
+        cardUpdateMinIntervalMs: Math.max(0, (config.cardUpdateMinIntervalSeconds ?? 2) * 1000),
+        cardSettle: config.cardSettle === "update" ? "update" : "recall",
+        approvalMode: config.approvalMode === "disabled" ? "disabled" : "windows",
+        approvalTimeoutMs: Math.max(1000, (config.approvalTimeoutSeconds ?? 300) * 1000),
+        allowWindow: config.allowWindow !== false,
+        auditPath: config.auditPath ?? "runtime/wps-bot-approval.jsonl",
+        ackInterventionText:
+          config.ackInterventionText ?? "已收到补充信息，当前任务会在下一轮处理。",
+        deliverChunks: config.deliverChunks ?? 4500,
       },
     };
+    return new WpsBotCore(opts);
   }
 
-  function cancelPending(chatId: string): void {
-    const pend = pendings.get(chatId);
-    if (pend === undefined) return;
-    pend.resolve({ kind: "cancelled" });
-  }
+  // ---- cordis 事件钩子 ----
 
-  // ---- 回包与相位 ----
+  void ctx.on("session/event", (session: AgentSessionLike, event: { type: string; data?: unknown }) => {
+    if (core === null) return;
+    core.handleSessionEvent(String(session?.id ?? ""), event);
+  });
 
-  function assistantTextOf(event: { data?: unknown }): string | undefined {
-    const message = (event.data as Record<string, unknown> | undefined)?.message as
-      | Record<string, unknown>
-      | undefined;
-    const content = message?.content;
-    if (!Array.isArray(content)) return undefined;
-    const parts: string[] = [];
-    for (const block of content) {
-      const b = block as Record<string, unknown>;
-      if (b.type === "text" && typeof b.text === "string" && b.text) parts.push(b.text);
-    }
-    return parts.length > 0 ? parts.join("\n") : undefined;
-  }
-
-  async function deliver(chatId: string, text: string): Promise<void> {
-    try {
-      await client.sendMarkdownSplit(chatId, text, null, config.deliverChunks ?? 4500);
-    } catch (error) {
-      logger.error("[wps-bot] deliver failed:", error);
-    }
-  }
-
-  async function interrupt(chatId: string, kind: unknown): Promise<void> {
-    try {
-      await client.sendMarkdown(
-        chatId,
-        `[任务已中止] 当前任务已${kind === "aborted" ? "被中止" : "失败"}（chat ${chatId}）。如需继续，请重新发起任务。`,
+  ctx.on(
+    "approval/request",
+    async (req: unknown, next: () => Promise<ApprovalOutcome>) => {
+      if (core === null) return next();
+      return core.handleApprovalRequest(
+        req as Parameters<WpsBotCore["handleApprovalRequest"]>[0],
+        next,
       );
-    } catch (error) {
-      logger.warn("[wps-bot] interrupt notice failed:", error);
-    }
-  }
-
-  async function finalizeTurn(chatId: string): Promise<void> {
-    await router.drain(chatId).catch(() => undefined);
-    if (router.queued(chatId) === 0) await cards.finish(chatId);
-  }
+    },
+    true,
+  );
 
   // ---- WPS 事件入站 ----
-
-  async function onWpsEvent(ev: WpsEvent): Promise<void> {
-    const pend = pendings.get(ev.chatId);
-    if (pend !== undefined && ev.senderId === pend.userId) {
-      pend.resolve({ kind: "reply", text: ev.text.trim() });
-      return;
-    }
-    await router.handleEvent(ev);
-  }
 
   function eventData(event: unknown): RawMessageEventData {
     const record = (event as Record<string, unknown> | undefined) ?? {};
@@ -507,61 +261,17 @@ export function apply(rawCtx: Context, config: WpsBotConfig): void {
     return (raw ?? {}) as RawMessageEventData;
   }
 
-  // ---- 事件钩子（相位 + drain / card settle） ----
-
-  void ctx.on("session/event", (session: AgentSessionLike, event: {
-    type: string;
-    data?: Record<string, unknown>;
-  }) => {
-    const chatId = chatForSessionId(String(session?.id ?? ""));
-    if (chatId === null) return;
-    switch (event.type) {
-      case "assistant/message": {
-        const text = assistantTextOf(event);
-        if (text !== undefined) void deliver(chatId, text);
-        break;
-      }
-      case "turn/start": {
-        const turn = (event.data as { turn?: unknown } | undefined)?.turn;
-        cards.phase(chatId, typeof turn === "number" ? { turn } : {});
-        break;
-      }
-      case "tool/call": {
-        const tool = (event.data as { name?: unknown } | undefined)?.name;
-        cards.phase(chatId, { tool: typeof tool === "string" && tool ? tool : "工具" });
-        break;
-      }
-      case "approval/asked": {
-        cards.phase(chatId, { phase: "等待人工审批" });
-        break;
-      }
-      case "turn/end": {
-        const kind = (event.data as { kind?: unknown } | undefined)?.kind;
-        if (kind === "error" || kind === "aborted") {
-          void interrupt(chatId, kind);
-        }
-        void finalizeTurn(chatId);
-        break;
-      }
-      default:
-        break;
-    }
-  });
-
-  ctx.on(
-    "approval/request",
-    (async (req: ApprovalRequestLike, next: () => Promise<ApprovalOutcomeLiteral>) =>
-      askApproval(req, next)) as never,
-    true,
-  );
-
-  // ---- 生命周期（bootstrap 后台执行；事件钩子立即可用） ----
+  async function onWpsEvent(ev: WpsEvent): Promise<void> {
+    if (core === null) return;
+    await core.handleIncomingEvent(ev);
+  }
 
   const bootstrap = (async () => {
     dedup = await EventDedup.load({
       limit: 2048,
-      path: config.seenEventsPath,
+      path: config.seenEventsPath ?? "runtime/wps-bot-seen-events.jsonl",
     });
+    core = buildCore(dedup);
     const dispatcher = new Dispatcher().registerFunc(
       "kso.app_chat.message.create",
       async (event: unknown) => {
@@ -592,8 +302,7 @@ export function apply(rawCtx: Context, config: WpsBotConfig): void {
   ctx.effect(() => {
     void bootstrap.catch(() => undefined);
     return async () => {
-      for (const chatId of [...pendings.keys()]) cancelPending(chatId);
-      await cards.finishAll().catch(() => undefined);
+      await core?.shutdown().catch(() => undefined);
       const disposals = [...chats.values()]
         .filter((entry) => entry.handle !== undefined)
         .map((entry) => (entry.handle as AgentHandleLike).dispose());
@@ -605,12 +314,5 @@ export function apply(rawCtx: Context, config: WpsBotConfig): void {
   }, "wps-bot.serve");
 }
 
-/** GA approval.py 的群问面提示词（Kubernetes 特化字样去产品化）。 */
-export function consentPrompt(review: string, allowWindow: boolean): string {
-  const instruction = allowWindow
-    ? "回复“同意”仅执行本次；回复“同意5分钟”（分钟数可替换）开启限时自动同意。"
-    : "本次仅支持回复“同意”执行一次，不开放限时自动同意。";
-  return `**需要确认的操作**\n\n${instruction}其他回复会取消本次操作并交给模型。\n\n${review}`;
-}
-
+export { approvalQuestion, ACK_APPROVED, ACK_DECLINED, ACK_TIMEOUT } from "./bot.ts";
 export default { name, Config, apply };

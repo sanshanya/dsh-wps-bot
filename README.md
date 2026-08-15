@@ -65,11 +65,12 @@ export WPS365_SP_ID=...
 npm test
 ```
 
-33 个用例（签名 / 分段 / 同意 / 幂等 / 协议 / 分发 / 卡片），全部为纯 `node --test` + 假实现替身，运行不需要 WPS 凭据。与真实 WPS 租户的真实联通验证属于产品发布通路（roadmap 第 3 项）。
+42 个用例（签名 / 分段 / 同意 / 幂等 / 协议 / 分发 / 卡片 / 宿主无关核心全链路），全部为纯 `node --test` + 假实现替身，运行不需要 WPS 凭据。与真实 WPS 租户的真实联通验证属于产品发布通路（roadmap 第 3 项）。
 
 ## 分层
 
 - **纯模块**（无 dsh 依赖，假件可测）：`signature.ts` / `split.ts` / `consent.ts` / `dedup.ts` / `protocol.ts` / `client.ts`（假 fetch）/ `dispatch.ts` / `card.ts`（假 client）
+- **宿主无关核心**：`bot.ts`（`WpsBotCore`：事件入口/审批答允/会话事件分流/回包），全部由假实现驱动测 9 用例
 - **宿主边界**：`index.ts` 只做 cordis 接线（open-event-sdk 长连接、`ctx.agents.create`、`session/event` 订阅、`approval/request` prepend waterfall、`dispose` 纪律）
 
 ## Roadmap（先打通产品闭环，再做抛光）
