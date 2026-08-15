@@ -377,6 +377,10 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
       reconnectMaxRetry: -1,
     });
     await eventClient.start();
+    // 观测锚点：组合内 stdout 低音量纪律下，boot 成败只此一条 info
+    logger.info(
+      `[wps-bot] listening (approvalMode=${String(config.approvalMode)}, cardMode=${String(config.cardMode)}, botDisplayName=${config.botDisplayName})`,
+    );
   })();
 
   bootstrap.catch((error: unknown) => {

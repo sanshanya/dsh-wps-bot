@@ -86,6 +86,26 @@ npm run budget:tokens   # 门禁（超基线任一 bucket 或 total → exit 1�
 - **宿主无关核心**：`bot.ts`（`WpsBotCore`：事件入口/审批答允/会话事件分流/回包），全部由假实现驱动测 19 用例
 - **宿主边界**：`index.ts` 只做 cordis 接线（open-event-sdk 长连接、`ctx.agents.create`、`session/event` 订阅、`approval/request` prepend waterfall、`dispose` 纪律）
 
+## 模态（一套接口，自然应对全模态）
+
+设计原则：协议层把一切入站 content 节点归一到**一只模型**——`WpsEvent.text`（含 inline `<at>`）、`attachments[]`（`{kind, name, storageKey}`：image/audio/video/sticker/file.local/custom_emoji）、`cloudDocLinks`/`sharedDocIds`/`unparsed` 三条辅道；出站暂为 markdown/card 两通道。模型与宿主只见归一面，不见 wire 形状差异——新增模态 = 协议层多认一只节点，业务面零改动。
+
+对 GA 的模态语义对照（GA 真值：`ga_wps/app.py:339/391`、`client.py:412-490`）：
+
+| 面 | GA | 本仓现状 |
+|---|---|---|
+| 入站解析归一 | protocol.py 全节点集 | ✅ 全量 + 真帧 fixture 背书 |
+| 入站字节 | run 前 eager download 全部附件 → `downloads/` + observations 入提示词 | ❌ 只注入「附件 ×N」占位，模型拿不到内容 |
+| 出站文件 | `result.files` 逐个 `upload_file`（两段：`POST /v7/chats/resources/upload` 分配 sha256 → PUT 字节 → 按后缀发 image/file 消息） | ❌ 无 upload API |
+| 多模态本体 | 经 dsh 桥间接收 | ➖ dsh-llm `ContentBlock` 已有 image 语义块 + provider 能力门（message.ts image admission），通道已备 |
+
+v1 增件拆分（按依赖排序，每步独立可验）：
+
+1. `client.downloadAttachment` / `client.uploadFile`——GA 端点逐字移植，假 fetch 锁 wire；
+2. 入站：`dispatch` 前下载到 `${workspaceRoot}/downloads/{chatId}/{eventId}/{idx}-{name}`，factify 注入本地路径清单（对位 GA observations）；
+3. 出站：turn settle 时扫描 `${workspaceRoot}/artifacts/` 的新文件并上传（GA `result.files` 的 dsh 对位）；
+4. 透传策略：image 且 provider admission 放行 → image 内容块；否则交路径、模型经 fs/pwsh 工具读。
+
 ## Roadmap（先打通产品闭环，再做抛光）
 
 1. ✅ **本版**：协议/分诊/卡片/审批纯模块 + 宿主接线 + 33 用例。
