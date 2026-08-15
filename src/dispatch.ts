@@ -38,6 +38,8 @@ export interface RouterOptions {
   factify?: (ev: WpsEvent) => string;
   /** 事件被真正派发（followup/inject 落地）时通知宿主（requester 追踪/卡片启动）。 */
   onDispatched?: (chatId: string, ev: WpsEvent, route: Exclude<Route, "duplicate" | "drop">) => void;
+  /** GA accepts_progress_reply：quote 命中在途进度卡 message id（busy 时才成立）。 */
+  isProgressReply?: (ev: WpsEvent, busy: boolean) => boolean;
   logger?: { warn(...args: unknown[]): void };
 }
 
@@ -57,13 +59,10 @@ export function defaultFactify(ev: WpsEvent): string {
   return `${head}\n\n${summary || "（无文本）"}`;
 }
 
-const PROMPT_IDS_CAP = 128;
-
 export class WpsRouter {
   private readonly opts: RouterOptions;
   private readonly handles = new Map<string, ChatSessionHandle>();
   private readonly queues = new Map<string, WpsEvent[]>();
-  private readonly promptIds = new Map<string, string[]>();
 
   constructor(opts: RouterOptions) {
     this.opts = opts;
@@ -84,26 +83,22 @@ export class WpsRouter {
     }
   }
 
-  private quoteHitsPrompt(ev: WpsEvent): boolean {
-    if (!ev.quoteMsgId) return false;
-    return this.promptIds.get(ev.chatId)?.includes(ev.quoteMsgId) ?? false;
-  }
-
   private factify(ev: WpsEvent): string {
     return (this.opts.factify ?? defaultFactify)(ev);
   }
 
   private async route(ev: WpsEvent): Promise<Route> {
     const handle = this.handles.get(ev.chatId);
-    const direct = ev.isPrivate || ev.mentioned || this.quoteHitsPrompt(ev);
-    const evidence = ev.evidenceBearing;
     const busy = handle?.status() === "running";
+    // GA：direct = isPrivate || mentioned || (quote == 在途进度卡 message id 且会话在跑)
+    const progressReply = this.opts.isProgressReply?.(ev, busy) ?? false;
+    const direct = ev.isPrivate || ev.mentioned || progressReply;
+    const evidence = ev.evidenceBearing;
 
     if (handle && direct && busy && !evidence) {
       // GA：运行中收到明确引用/私聊/@ → 复用原生 intervention seam 补充当前用户事实
       if (handle.inject(this.factify(ev))) {
         await this.opts.ackIntervention?.(ev.chatId, ev.senderId, ev.senderName);
-        await this.markPrompt(ev.chatId, ev.eventId);
         this.opts.onDispatched?.(ev.chatId, ev, "inject");
         return "inject";
       }
@@ -119,7 +114,6 @@ export class WpsRouter {
     const queue = this.queues.get(ev.chatId) ?? [];
     queue.push(ev);
     this.queues.set(ev.chatId, queue);
-    await this.markPrompt(ev.chatId, ev.eventId);
     await this.drain(ev.chatId);
     return "enqueue";
   }
@@ -154,14 +148,6 @@ export class WpsRouter {
 
   entries(): IterableIterator<[string, ChatSessionHandle]> {
     return this.handles.entries();
-  }
-
-  private async markPrompt(chatId: string, id: string): Promise<void> {
-    if (!id) return;
-    const ids = this.promptIds.get(chatId) ?? [];
-    ids.push(id);
-    if (ids.length > PROMPT_IDS_CAP) ids.shift();
-    this.promptIds.set(chatId, ids);
   }
 
   /** 宿主会话报错/中止的路径：把手柄从在册清出（下次 direct 重建）。 */

@@ -173,17 +173,26 @@ test("闭环：私聊进队 → 助手回复回送到群 → 短任务零卡片"
     assert.deepEqual(requesters.get("c1"), { userId: "u1", name: "张三" });
 
     core.handleSessionEvent("sess:c1", { type: "turn/start", data: { turn: 1 } });
+    // GA A9：中间 step 旁白不入群
     core.handleSessionEvent("sess:c1", {
       type: "assistant/message",
-      data: { message: { content: [{ type: "text", text: "答案是 42" }] } },
+      data: { turn: 1, step: 1, message: { content: [{ type: "text", text: "先查一下" }] } },
     });
+    await SLEEP(10);
+    assert.equal(client.splits.length, 0);
+    core.handleSessionEvent("sess:c1", {
+      type: "assistant/message",
+      data: { turn: 1, step: 2, message: { content: [{ type: "text", text: "答案是 42" }] } },
+    });
+    await SLEEP(10);
+    assert.equal(client.splits.length, 0);
+
+    handle.running = false;
+    core.handleSessionEvent("sess:c1", { type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } });
     await SLEEP(10);
     assert.equal(client.splits.length, 1);
     assert.equal(client.splits[0]!.text, "答案是 42");
     assert.equal(client.splits[0]!.mention, false);
-
-    handle.running = false;
-    await core.finalizeTurn("c1");
     assert.equal(client.cardsSent.length, 0); // initialDelay 未到 → 永远零卡
     assert.equal(client.recalls.length, 0);
   } finally {
@@ -354,12 +363,72 @@ test("审批：他人回复不原子消费，只认 requester", async () => {
   }
 });
 
+test("quote：只有引用在途进度卡才算 direct；完结后旧卡引证被静默丢弃", async () => {
+  const { core, handle, client, cleanup } = makeRig({ cardInitialDelayMs: 10 });
+  try {
+    await core.handleIncomingEvent(ev({ isPrivate: true, chatType: "p2p", text: "开工" }));
+    await SLEEP(30); // 发卡
+    assert.equal(client.cardsSent.length, 1);
+
+    // 会话在跑 + quote 在途进度卡 → inject（GA: is_running && quote == progress_message_id）
+    handle.running = true;
+    assert.equal(
+      await core.handleIncomingEvent(
+        ev({ quoteMsgId: client.cardsSent[0]!.markdown ? "card-1" : "", text: "顺便查下" }),
+      ),
+      "inject",
+    );
+    assert.equal(handle.injectLog.length, 1);
+    assert.ok(handle.injectLog[0]!.includes("顺便查下"));
+
+    handle.running = false;
+    await core.finalizeTurn("c1"); // 完结留卡 recall
+    await SLEEP(5);
+    assert.equal(client.recalls.length, 1);
+
+    // 已完结：再 quote 这张卡按 GA accepts_progress_reply 不成立（进度卡不在途）→ 静默
+    assert.equal(
+      await core.handleIncomingEvent(ev({ quoteMsgId: "card-1", text: "再看看" })),
+      "drop",
+    );
+  } finally {
+    await core.shutdown();
+    await cleanup();
+  }
+});
+
+test("M1：turn 被中止后，死的 pending 不得以幻影走答允（无 ack/无批准入账）", async () => {
+  const { core, handle, client, cleanup, auditPath } = makeRig({ approvalTimeoutMs: 60000 });
+  try {
+    await core.handleIncomingEvent(ev({ isPrivate: true, chatType: "p2p" }));
+    const p = core.handleApprovalRequest(
+      { agent: "agent:c1", reason: "safe op", toolName: "pwsh" },
+      async () => "rejected",
+    );
+    await SLEEP(5);
+    assert.equal(core.pendingCount(), 1);
+
+    core.handleSessionEvent("sess:c1", { type: "turn/end", data: { turn: 1, reason: { kind: "aborted" } } });
+    await SLEEP(5);
+    assert.equal(core.pendingCount(), 0);
+    assert.equal(await p, "cancelled"); // 死的不批：outcome 归拨 cancelled 而非 "approved"
+    assert.ok(!client.markdown.some((m) => m.text.includes("操作已批准")));
+
+    const rows = await auditRows(auditPath);
+    assert.ok(rows.some((r) => r.auditOutcome === "cancelled"));
+  } finally {
+    await core.shutdown();
+    await cleanup();
+  }
+});
+
 test("中断：turn/end:aborted → 送本 chat 的中断通知（带 chat id）", async () => {
   const { core, handle, client, cleanup } = makeRig();
   try {
     await core.handleIncomingEvent(ev({ isPrivate: true, chatType: "p2p" }));
     handle.running = false;
-    core.handleSessionEvent("sess:c1", { type: "turn/end", data: { kind: "aborted", turn: 2 } });
+    // wire 形状：packages/core/session/src/types.ts:252 — { turn, reason: { kind } }
+    core.handleSessionEvent("sess:c1", { type: "turn/end", data: { turn: 2, reason: { kind: "aborted" } } });
     await SLEEP(10);
     const notice = client.markdown.find((m) => m.text.includes("任务已中止"));
     assert.ok(notice);

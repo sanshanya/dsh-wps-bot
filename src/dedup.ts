@@ -10,7 +10,7 @@
  * @module dsh-wps-bot/dedup
  */
 
-import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
 export class EventDedup {
@@ -108,7 +108,10 @@ export class EventDedup {
     const tail = this.order.slice(-this.limit);
     const body =
       tail.map((id) => JSON.stringify({ event_id: id })).join("\n") + "\n";
-    await writeFile(this.path, body, "utf8");
+    // GA app.py:50-60 的 tmp+replace；崩落中间态毁不了 seen_events
+    const tmpPath = `${this.path}.compact.tmp`;
+    await writeFile(tmpPath, body, "utf8");
+    await rename(tmpPath, this.path);
     this.writes = 0;
     // 与 load 的回读结果对齐：order/ids 不变（tail 即原 order 的尾部 limit 项）
   }

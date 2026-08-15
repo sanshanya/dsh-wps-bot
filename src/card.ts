@@ -154,6 +154,11 @@ export class ProgressCards {
     return this.states.has(chatId);
   }
 
+  /** 在途进度卡 message id（GA accepts_progress_reply 的对撞对象）。 */
+  progressMessageId(chatId: string): string | null {
+    return this.states.get(chatId)?.messageId ?? null;
+  }
+
   /** 延迟命中后仍未完结 → 发送首卡并启动心跳。 */
   private async ensureCard(chatId: string): Promise<void> {
     const state = this.states.get(chatId);

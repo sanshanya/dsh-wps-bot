@@ -148,14 +148,22 @@ export function apply(rawCtx: Context, config: WpsBotConfig): void {
   async function ensure(chatId: string): Promise<ChatSessionHandle> {
     let entry = chats.get(chatId);
     if (entry !== undefined && entry.handle !== undefined) return wrap(chatId, entry.handle);
-    const handle = (await ctx.agents.create({
-      sessionId: SessionId(`wps-bot:${chatId}`),
-      meta: { cwd: config.workspaceRoot || process.cwd() },
-      agentOptions: {
-        provider: config.provider ?? "deepseek-official",
-        model: config.model ?? "deepseek-v4-flash",
-      },
-    })) as AgentHandleLike;
+    // F5/R17：resume 优先——持久 line 截盘上已存在同 id 时 create 走拒绝路径，turn 照跑零持久化零信号
+    const sessionId = SessionId(`wps-bot:${chatId}`);
+    const agentOptions = {
+      provider: config.provider ?? "deepseek-official",
+      model: config.model ?? "deepseek-v4-flash",
+    };
+    let handle: AgentHandleLike;
+    try {
+      handle = (await ctx.agents.resume({ resumeSessionId: sessionId, agentOptions })) as AgentHandleLike;
+    } catch {
+      handle = (await ctx.agents.create({
+        sessionId,
+        meta: { cwd: config.workspaceRoot || process.cwd() },
+        agentOptions,
+      })) as AgentHandleLike;
+    }
     if (entry === undefined) {
       entry = { chatId };
       chats.set(chatId, entry);
@@ -228,6 +236,12 @@ export function apply(rawCtx: Context, config: WpsBotConfig): void {
   }
 
   // ---- cordis 事件钩子 ----
+
+  void ctx.on("agent/disposed", (agent: unknown) => {
+    for (const [, entry] of chats) {
+      if (entry.handle?.agent === agent) entry.handle = undefined;
+    }
+  });
 
   void ctx.on("session/event", (session: AgentSessionLike, event: { type: string; data?: unknown }) => {
     if (core === null) return;

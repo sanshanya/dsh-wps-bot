@@ -134,6 +134,12 @@ export class WpsBotCore {
     this.router = new WpsRouter({
       dedup: opts.dedup,
       ensure: (chatId) => this.sessions.ensure(chatId),
+      // GA accepts_progress_reply：quote == 在途进度卡 id 且会话在跑
+      isProgressReply: (ev, busy) =>
+        busy &&
+        ev.quoteMsgId.length > 0 &&
+        this.cards.progressMessageId(ev.chatId) === ev.quoteMsgId,
+
       ackIntervention: async (chatId, senderUserId, senderName) => {
         const mention = await this.client
           .resolveMention(senderUserId, senderName)
@@ -193,7 +199,8 @@ export class WpsBotCore {
         );
         return "allowed-once";
       } catch {
-        return next(); // 审计写失败 → 降级回群问（未记账的自动答允不得出闸）
+        // 本插件组合通常没有第二个 answerer；这条 next() 的实际上是 'unavailable'→deny——fail-closed 正确，不是回群问
+        return next();
       }
     }
 
@@ -227,15 +234,21 @@ export class WpsBotCore {
     return decision.outcome;
   }
 
-  /** session/event 钩子：相位 + 队列泄流 + 回包/中断。 */
+  /** 每 chat 当轮最高一个含 text 的 assistant 消息正文（GA terminal response 的最后一条）。 */
+  private readonly turnFinalText = new Map<string, string>();
+
+  /** session/event 钩子：相位 + 终态回答缓冲 + turn/end 的验收/中断/泄流。
+   *  wire 形状按 packages/core/session/src/types.ts:252（turn/end: { turn, reason: TurnEndReason }，kind ∈ completed/aborted/error/blocked/max-tokens）。
+   */
   handleSessionEvent(sessionId: string, event: { type: string; data?: unknown }): void {
     const chatId = this.chatForSessionIdFn(sessionId);
     if (chatId === null) return;
     const data = event.data as Record<string, unknown> | undefined;
     switch (event.type) {
       case "assistant/message": {
+        // GA A9：只有终态回答可作正式交付；step-by-step 的中间 ara 先入缓冲，turn/end 才定稿
         const text = assistantTextOf(event);
-        if (text !== undefined) void this.deliver(chatId, text);
+        if (text !== undefined) this.turnFinalText.set(chatId, text);
         break;
       }
       case "turn/start": {
@@ -253,9 +266,20 @@ export class WpsBotCore {
         break;
       }
       case "turn/end": {
-        const kind = data?.kind;
-        if (kind === "error" || kind === "aborted") {
+        const reason = (data as { reason?: { kind?: string } } | undefined)?.reason;
+        const kind = reason?.kind;
+        if (kind === "completed") {
+          const finalText = this.turnFinalText.get(chatId);
+          if (finalText !== undefined && finalText.length > 0) {
+            this.turnFinalText.delete(chatId);
+            void this.deliver(chatId, finalText);
+          }
+        } else if (kind === "error" || kind === "aborted") {
+          this.turnFinalText.delete(chatId);
+          this.cancelPending(chatId); // M1：turn 死去，死的 pending 不得以幻影走答允
           void this.interrupt(chatId, kind);
+        } else {
+          this.turnFinalText.delete(chatId);
         }
         void this.finalizeTurn(chatId);
         break;

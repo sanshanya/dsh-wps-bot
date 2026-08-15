@@ -135,14 +135,23 @@ test("分诊矩阵：dedup 同 event_id 再投递 → duplicate；release 后允
   assert.equal(await router.handleEvent(ev({ eventId: "m10", isPrivate: true })), "enqueue");
 });
 
-test("分诊矩阵：quote 命中最近任务 → 当 direct 处理", async () => {
+test("分诊矩阵：GA quote 语义——只对在途进度卡的 quote 才算 direct；派发的历史 id 不算", async () => {
   const d = new EventDedup({ limit: 128 });
   const handle = fakeHandle();
-  const router = new WpsRouter({ dedup: d, ensure: async () => handle });
+  // 假进度卡 id "card-1"；GA busy 时才命中
+  const isProgressReply = (e: WpsEvent, busy: boolean) => busy && e.quoteMsgId === "card-1";
+  const router = new WpsRouter({ dedup: d, ensure: async () => handle, isProgressReply });
   await router.handleEvent(ev({ eventId: "b1", isPrivate: true, text: "borne" }));
-  // quote 命中 b1 的任务本体 eventId
-  assert.equal(await router.handleEvent(ev({ eventId: "b2", quoteMsgId: "b1" })), "enqueue");
-  assert.equal(handle.followupLog.length, 2);
+  // quote 任务本体 eventId 的老消息（被派发过）→ 不算 direct（GA 唯一 quote 源是进度卡）
+  assert.equal(await router.handleEvent(ev({ eventId: "b2", quoteMsgId: "b1" })), "drop");
+  // quote 在途进度卡且会话在跑 → direct → 走 inject
+  handle.running = true;
+  assert.equal(await router.handleEvent(ev({ eventId: "b3", quoteMsgId: "card-1" })), "inject");
+  assert.equal(handle.injectLog.length, 1);
+  assert.equal(handle.followupLog.length, 1);
+  // 会话空闲后 quote 同一张卡，不算 direct（GA accepts_progress_reply 要求 is_running）
+  handle.running = false;
+  assert.equal(await router.handleEvent(ev({ eventId: "b4", quoteMsgId: "card-1" })), "drop");
 });
 
 test("分诊矩阵：followup 失败 → 补充回队首，不重释已投递", async () => {
