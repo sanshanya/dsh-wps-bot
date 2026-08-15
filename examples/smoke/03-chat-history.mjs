@@ -15,7 +15,8 @@ const client = new WpsClient({
 });
 
 const response = await client.getMessages(chatId, pageSize);
-const messages = Array.isArray((response.data ?? {}).messages) ? (response.data).messages : [];
+// 真机键名为 data.items（2026-08 真帧 dump 验证；SDK 文档的 data.messages 键名不真）
+const messages = Array.isArray((response.data ?? {}).items) ? (response.data).items : [];
 console.log(`拉取 ${messages.length} 条（chat_id=${chatId}）`);
 for (const m of messages.slice(-8)) {
   const c = m.content ?? {};
