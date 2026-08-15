@@ -67,6 +67,17 @@ npm test
 
 50 个用例（签名 / 分段 / 同意 / 幂等 / 协议 / 分发 / 卡片 / 宿主无关核心全链路 + 宿主接线纯函数），全部为纯 `node --test` + 假实现替身，运行不需要 WPS 凭据。与真实 WPS 租户的真实联通验证属于产品发布通路（roadmap 第 3 项）。
 
+## Token 预算
+
+本仓由 agent 维护，tracked 文本的 token 总量是维护者注意力的稀缺资源——预算 ratchet 只减不增（GA 口径：只有批准的新产品契约可提高）：
+
+```bash
+npm run survey:tokens   # 测量仪（cl100k_base 真 BPE；exit 恒 0）
+npm run budget:tokens   # 门禁（超基线任一 bucket 或 total → exit 1）
+```
+
+移植自 [better-model-provider/scripts/token-survey.mjs](https://github.com/sanshanya/better-model-provider) 的测量面 + GA `token_budget.py` 的 ratchet 门禁。基线在 `scripts/token-baseline.json`；提高预算的唯一动作是 `node scripts/token-budget.mjs --regen` 单行 commit。设计差（相对 BMP 原稿）：bucket 按本仓布局（src/ test/ docs+examples 其余 tooling）、计数核心与门禁单信源、js-tiktoken 在 devDependencies 显式锁版。per-source 比值（tests/docs/tooling）仅作观察，不入闸。
+
 ## 分层
 
 - **纯模块**（无 dsh 依赖，假件可测）：`signature.ts` / `split.ts` / `consent.ts` / `dedup.ts` / `protocol.ts` / `client.ts`（假 fetch）/ `dispatch.ts` / `card.ts`（假 client）

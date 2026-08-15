@@ -22,7 +22,9 @@
   ],
   "scripts": {
     "test": "node --test test/*.test.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "survey:tokens": "node scripts/token-survey.mjs",
+    "budget:tokens": "node scripts/token-budget.mjs"
   },
   "dependencies": {
     "open-event-sdk": "^1.0.1"
@@ -35,6 +37,7 @@
     "@deepseek-ai/schemastery": "*"
   },
   "devDependencies": {
+    "js-tiktoken": "^1.0.21",
     "typescript": "^5.9.0"
   },
   "engines": {

@@ -94,6 +94,27 @@ interface AgentHandleLike {
   session?: AgentSessionLike;
 }
 
+/** 测试注入点：真集实质上 open-event-sdk 的 Client；假实现可在 node --test 中走协议帧。 */
+export interface EventClientLike {
+  start(): Promise<void>;
+  stop(): void;
+}
+export interface EventClientOptions {
+  appId: string;
+  appSecret: string;
+  dispatcher: unknown;
+  logLevel?: unknown;
+  reconnectMaxRetry?: number;
+}
+export type EventClientFactory = (opts: EventClientOptions) => EventClientLike;
+
+export interface BootDeps {
+  /** WPS REST 出站；默认真实 WpsClient。 */
+  client?: import("./bot.ts").BotClient;
+  /** open-event-sdk Client 的工厂；默认真实 SDK。假实现只须无网络地回 dispatcher 投递。 */
+  makeEventClient?: EventClientFactory;
+}
+
 interface ChatEntry {
   chatId: string;
   handle?: AgentHandleLike;
@@ -141,7 +162,7 @@ export function clearDisposedHandles(
   return cleared;
 }
 
-export function apply(rawCtx: Context, config: WpsBotConfig): void {
+export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}): void {
   const ctx: any = rawCtx;
   const logger = ctx.logger ?? console;
 
@@ -154,12 +175,14 @@ export function apply(rawCtx: Context, config: WpsBotConfig): void {
     );
   }
   const apiBase = config.apiBase || process.env.WPS365_API_BASE || "https://openapi.wps.cn";
-  const client = new WpsClient({
-    clientId,
-    clientSecret,
-    apiBase,
-    accessToken: config.accessToken ?? "",
-  });
+  const client: import("./bot.ts").BotClient =
+    deps.client ??
+    new WpsClient({
+      clientId,
+      clientSecret,
+      apiBase,
+      accessToken: config.accessToken ?? "",
+    });
   const botIds = [clientId, spId];
 
   // ---- 每 chat 的会话句柄与 requester 注册 ----
@@ -232,7 +255,7 @@ export function apply(rawCtx: Context, config: WpsBotConfig): void {
 
   let dedup: EventDedup | null = null;
   let core: WpsBotCore | null = null;
-  let eventClient: WpsEventClient | undefined;
+  let eventClient: EventClientLike | undefined;
 
   // ---- 事件订阅核心接线 ----
 
@@ -333,7 +356,17 @@ export function apply(rawCtx: Context, config: WpsBotConfig): void {
         await onWpsEvent(payload);
       },
     );
-    eventClient = new WpsEventClient({
+    const factory: EventClientFactory =
+      deps.makeEventClient ??
+      ((opts: EventClientOptions) =>
+        new WpsEventClient({
+          appId: opts.appId,
+          appSecret: opts.appSecret,
+          dispatcher: opts.dispatcher as any,
+          logLevel: LogLevel.Info,
+          reconnectMaxRetry: -1,
+        }));
+    eventClient = factory({
       appId: clientId,
       appSecret: clientSecret,
       dispatcher,
