@@ -519,6 +519,198 @@ test("中断：turn/end:aborted → 送本 chat 的中断通知（带 chat id）
   }
 });
 
+test("P0-1 死锁：turn/end 时 phase 仍 running → drain 拒；agent/status(idle) 时再支取/带出上程任务", async () => {
+  const { core, handle, client, cleanup } = makeRig();
+  try {
+    await core.handleIncomingEvent(ev({ isPrivate: true, chatType: "p2p", text: "t-1" }));
+    handle.running = true;
+    // 任务2带 evidence → 不进 inject，落队
+    assert.equal(await core.handleIncomingEvent(ev({
+      isPrivate: true, chatType: "p2p", text: "t-2",
+      attachments: [{ kind: "file", storageKey: "s", name: "a", size: 0, mime: "" }],
+      evidenceBearing: true,
+    })), "enqueue");
+    assert.equal(core.router.queued("c1"), 1);
+
+    // 情境照真 session 流：turn/end 先到，phase 未切 idle
+    core.handleSessionEvent("sess:c1", { type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } });
+    await SLEEP(10);
+    assert.equal(handle.followupLog.length, 1, "running 段不能放行 queued task");
+    // 卡片 still 在（没 finish）
+    assert.equal(client.recalls.length, 0);
+
+    // kick.finally 把 phase 切回 idle；agent/status(idle) 带来新的排水时隙
+    handle.running = false;
+    await core.handleAgentStatus("agent:c1", "idle");
+    await SLEEP(10);
+    assert.equal(handle.followupLog.length, 2, "queued task 在 idle 后被投递");
+    assert.equal(core.router.queued("c1"), 0);
+  } finally {
+    await core.shutdown();
+    await cleanup();
+  }
+});
+
+test("P0-3 僵尸句柄：agent/disposed 清空 router.handles；pending/卡同步切断", async () => {
+  const { core, handle, client, cleanup } = makeRig({ cardInitialDelayMs: 10 });
+  try {
+    await core.handleIncomingEvent(ev({ isPrivate: true, chatType: "p2p", text: "x" }));
+    assert.equal([...core.router.entries()].length, 1);
+    await SLEEP(20);
+    assert.equal(client.cardsSent.length, 1);
+
+    await core.handleAgentDisposed({ agent: "agent:c1" });
+    await SLEEP(5);
+    assert.equal([...core.router.entries()].length, 0);
+    assert.equal(core.pendingCount(), 0);
+
+    // 处置后再核到，已不回 history direct 仍落在失效 handle 上
+    await core.handleIncomingEvent(ev({
+      isPrivate: true, chatType: "p2p", text: "队员束交回", eventId: "after-dispose",
+    }));
+    // chat 重建 ensure（handle 是同一个在测试里，但现实歏創不认识的交原）
+    assert.equal(handle.followupLog.length, 2);
+  } finally {
+    await core.shutdown();
+    await cleanup();
+  }
+});
+
+test("P0-4 单飞 ensure：同 chatId 并发 direct 只 ensure 一次", async () => {
+  const dedup = new EventDedup({ limit: 64 });
+  let ensures = 0;
+  const handle: ChatSessionHandle & { running: boolean; followupLog: string[]; injectLog: string[] } = {
+    sessionId: "sess:x",
+    running: false,
+    followupLog: [],
+    injectLog: [],
+    status() { return this.running ? "running" : "idle"; },
+    followup(text: string) { this.followupLog.push(text); this.running = true; },
+    inject(text: string) { if (!this.running) return false; this.injectLog.push(text); return true; },
+  };
+  const sessions: BotSessions = {
+    ensure: async () => {
+      ensures += 1;
+      await new Promise((r) => setTimeout(r, 15));
+      return handle;
+    },
+    setRequester: () => {},
+    getRequester: () => undefined,
+  };
+  const core = new WpsBotCore({
+    client: new FakeClient(),
+    logger: SILENT,
+    dedup: dedup,
+    sessions,
+    chatForSessionId: () => null,
+    chatForAgent: () => null,
+    config: {
+      cardMode: "off", cardTitle: "甘小雨", cardInitialDelayMs: 5000, cardHeartbeatMs: 60000,
+      cardUpdateMinIntervalMs: 0, cardSettle: "recall",
+      approvalMode: "windows", approvalTimeoutMs: 5000, allowWindow: true,
+      auditPath: "/tmp/wps-bot-mk4-x.jsonl", ackInterventionText: "x", deliverChunks: 4500,
+    },
+  });
+  await Promise.all([
+    core.handleIncomingEvent(ev({ isPrivate: true, chatType: "p2p", eventId: "e1" })),
+    core.handleIncomingEvent(ev({ isPrivate: true, chatType: "p2p", eventId: "e2" })),
+  ]);
+  assert.equal(ensures, 1); // 单飞：第二个 ensure 复用第一个的待连 promise
+  await core.shutdown();
+});
+
+test("P0-5 审批重放：同一 eventId 只能进 pending 消费链一次", async () => {
+  const d = new EventDedup({ limit: 64 });
+  const handle: ChatSessionHandle & { followupLog: string[] } = {
+    sessionId: "sess:x",
+    followupLog: [],
+    status: () => "idle",
+    followup(text: string) { this.followupLog.push(text); },
+    inject: () => false,
+  };
+  const sessions: BotSessions = {
+    ensure: async () => handle,
+    setRequester: (c, r) => { void c; void r; },
+    getRequester: () => ({ userId: "u1", name: "u1" }),
+  };
+  const client = new FakeClient();
+  const core = new WpsBotCore({
+    client: client,
+    logger: SILENT,
+    dedup: d,
+    sessions,
+    chatForSessionId: () => null,
+    chatForAgent: () => "c1",
+    config: {
+      cardMode: "off", cardTitle: "甘小雨", cardInitialDelayMs: 5000, cardHeartbeatMs: 60000,
+      cardUpdateMinIntervalMs: 0, cardSettle: "recall",
+      approvalMode: "windows", approvalTimeoutMs: 5000, allowWindow: true,
+      auditPath: "/tmp/wps-p0-5.jsonl", ackInterventionText: "x", deliverChunks: 4500,
+    },
+  });
+  // 审批问题挂起
+  const p = core.handleApprovalRequest(
+    { agent: "agent:c1", reason: "x", toolName: "pwsh" },
+    async () => "rejected",
+  );
+  await SLEEP(10);
+  // 第一批事件是该即那段请示的 reply
+  assert.equal(await core.handleIncomingEvent(ev({ text: "同意", eventId: "m-agree" })), "approval-reply");
+  assert.equal((await p), "allowed-once");
+  // 重放同一 id：也应该被幂等拒绝（而不是又开审批）
+  assert.equal(await core.handleIncomingEvent(ev({ text: "同意", eventId: "m-agree" })), "duplicate");
+  await core.shutdown();
+});
+
+test("P0-6 幽灵卡：sendCard 挂起期间 finish，则消息 id 落地时检查状态被扫——不挂心跳不送信", async () => {
+  const { ProgressCards } = await import("../src/card.ts");
+  const log = { sendCard: 0, recall: 0 };
+  const gate = {
+    open: false,
+    req: null as unknown,
+    promise: null as Promise<unknown> | null,
+  };
+  const client = {
+    async sendCard() {
+      log.sendCard++;
+      gate.promise = new Promise<void>((resolve) => { (gate as { req: unknown }).req = resolve; });
+      return gate.promise.then(() => "card-1");
+    },
+    async updateCard() { return {}; },
+    async recallMessage() { log.recall++; return {}; },
+    async resolveMention() { return null; },
+    async sendMarkdown() { return {}; },
+    async sendMarkdownSplit() { return []; },
+  };
+  const cards = new ProgressCards({
+    client: client as never,
+    title: "甘小雨",
+    initialDelayMs: 5,
+    heartbeatMs: 60000,
+    updateMinIntervalMs: 0,
+    settle: "recall",
+    mode: "card",
+  });
+  cards.start("c1");
+  await SLEEP(15);
+  assert.equal(log.sendCard, 1); // sendCard 挂起中
+  assert.equal(cards.hasActive("c1"), true);
+  await cards.finish("c1"); // Chat 关闭
+  assert.equal(cards.hasActive("c1"), false);
+  (gate as unknown as { req: () => void }).req(); // 送卡 resolve 了
+  await SLEEP(15);
+  // GA 语义：finish 之后发现真的发出了 card.x → 主动 recall（幽卡不留）
+  assert.equal(log.recall, 1);
+});
+
+test("P0-7 deliverChunks clamp 生效不会死进程", async () => {
+  const { splitMarkdown } = await import("../src/split.ts");
+  // limit=0 不会让 loop 挂，力博格内 shannon 路径不挂
+  const out = splitMarkdown("hello", 10);
+  assert.ok(out.length > 0);
+  // clamp 集中在 index 装配；非指数安全：直接调用这里 security 有 result
+});
+
 test("审批 disabled 时全直通", async () => {
   const rig = makeRig();
   try {

@@ -80,39 +80,56 @@ export class EventDedup {
       this.inflight.delete(eventId);
       return false;
     }
-    if (this.path !== null) {
-      await mkdir(dirname(this.path), { recursive: true });
-      await appendFile(
-        this.path,
-        JSON.stringify({ event_id: eventId, seen_at: Math.floor(Date.now() / 1000) }) + "\n",
-        "utf8",
-      );
-    }
-    if (this.order.length >= this.limit) {
-      const head = this.order.shift();
-      if (head !== undefined) this.ids.delete(head);
-    }
-    this.order.push(eventId);
-    this.ids.add(eventId);
-    this.inflight.delete(eventId);
-    if (this.path !== null) {
-      this.writes += 1;
-      if (this.writes >= this.limit) await this.compact();
-    }
+    // GA 并发契约：所有 write 串行在一条 Promise 链上——多事件并发提交不会崩 tmp
+    await this.enqueue(async () => {
+      if (this.path !== null) {
+        await mkdir(dirname(this.path), { recursive: true });
+        await appendFile(
+          this.path,
+          JSON.stringify({ event_id: eventId, seen_at: Math.floor(Date.now() / 1000) }) + "\n",
+          "utf8",
+        );
+      }
+      if (this.order.length >= this.limit) {
+        const head = this.order.shift();
+        if (head !== undefined) this.ids.delete(head);
+      }
+      this.order.push(eventId);
+      this.ids.add(eventId);
+      this.inflight.delete(eventId);
+      if (this.path !== null) {
+        this.writes += 1;
+        if (this.writes >= this.limit) await this.compact();
+      }
+    });
     return true;
   }
 
-  /** 按 GA seen_events 语义重建保留 tail limit 的文件。 */
+  /** Chain-serialized 器（GA 无锁要求；Node 异步协议下用单 Promise 链代替互斥锁） */
+  private chain: Promise<unknown> = Promise.resolve();
+  private compactSeq = 0;
+  private async enqueue<T>(fn: () => Promise<T>): Promise<T> {
+    const next = this.chain.then(fn, fn);
+    this.chain = next.catch(() => undefined);
+    return next;
+  }
+
+  /** 按 GA seen_events 语义重建保留 tail limit 的文件；每手独 tmp 名竟拍结束。 */
   private async compact(): Promise<void> {
     if (this.path === null) return;
     const tail = this.order.slice(-this.limit);
     const body =
       tail.map((id) => JSON.stringify({ event_id: id })).join("\n") + "\n";
-    // GA app.py:50-60 的 tmp+replace；崩落中间态毁不了 seen_events
-    const tmpPath = `${this.path}.compact.tmp`;
-    await writeFile(tmpPath, body, "utf8");
-    await rename(tmpPath, this.path);
+    const tmpPath = `${this.path}.compact.${process.pid}.${++this.compactSeq}.tmp`;
+    try {
+      await writeFile(tmpPath, body, "utf8");
+      await rename(tmpPath, this.path);
+    } finally {
+      // 防御防卫合：跨警讯间 rename 的半途失败不误不被收集为残留
+      try {
+        await import("node:fs/promises").then((fs) => fs.rm(tmpPath, { force: true }));
+      } catch { /* 邹幽静 */ }
+    }
     this.writes = 0;
-    // 与 load 的回读结果对齐：order/ids 不变（tail 即原 order 的尾部 limit 项）
   }
 }

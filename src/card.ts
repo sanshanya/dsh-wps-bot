@@ -119,26 +119,34 @@ export class ProgressCards {
     const state = this.states.get(chatId);
     if (state === undefined) return;
     state.lastActivity = Date.now() / 1000;
-    if (typeof phase.turn === "number" && Number.isFinite(phase.turn)) state.turn = phase.turn;
+    // GA _TURN：turn 换到时清上历 tool（之前留在旧工具上）
+    if (typeof phase.turn === "number" && Number.isFinite(phase.turn)) {
+      state.turn = phase.turn;
+      state.tool = "";
+    }
     if (phase.tool) state.tool = phase.tool;
     if (phase.phase) state.phase = phase.phase;
     if (state.messageId !== null) void this.maybeUpdate(chatId, state);
   }
 
-  /** 完结收口：不收在不该收的错误里。 */
+  /** 完结收口：[仅限 settle=update] 已改成「任务已完成。」——GA 的收口语义；recall 是默认。 */
   async finish(chatId: string): Promise<void> {
     if (this.opts.mode === "off") return;
     const state = this.states.get(chatId);
     if (state === undefined) return;
     this.states.delete(chatId);
+    state.done = true;
     if (state.delayTimer) clearTimeout(state.delayTimer);
     if (state.heartbeatTimer) clearInterval(state.heartbeatTimer);
     if (state.messageId === null) return;
     try {
       if (this.opts.settle === "update") {
+        // 结束态用「任务已完成。」——不再发「已收到，正在处理。」
+        const elapsed = Math.max(0, Math.floor(Date.now() / 1000 - state.startedAt));
+        const final = `任务已完成。（历时 ${elapsed >= 60 ? `${Math.floor(elapsed / 60)} 分钟` : `${elapsed} 秒`}）`;
         await this.opts.client.updateCard(
           state.messageId,
-          renderCard(state, Date.now() / 1000),
+          final,
           this.opts.title,
         );
       } else {
@@ -159,15 +167,26 @@ export class ProgressCards {
     return this.states.get(chatId)?.messageId ?? null;
   }
 
-  /** 延迟命中后仍未完结 → 发送首卡并启动心跳。 */
+  /**
+   * 延迟命中后仍未完结 → 发送首卡并启动心跳。
+   * 场景：sendCard 网络延迟中 sh finish（short task）→ states 表已删：果断放弃，不再挂
+   * 心跳（否则消息的卡被出，但 interval 不停 + 卡留在外）。
+   */
   private async ensureCard(chatId: string): Promise<void> {
     const state = this.states.get(chatId);
     if (state === undefined || state.messageId !== null || state.done) return;
-    state.messageId = await this.opts.client.sendCard(
+    const messageId = await this.opts.client.sendCard(
       chatId,
       renderCard(state, Date.now() / 1000),
       this.opts.title,
     );
+    // 检查 sendCard 结束后该 chat 状态是否仍是同一个（中公被 finish 或 reopen 换掉的话不挂心跳）
+    const live = this.states.get(chatId);
+    if (live !== state || state.done) {
+      try { await this.opts.client.recallMessage(messageId); } catch { /* 静默 */ }
+      return;
+    }
+    state.messageId = messageId;
     state.heartbeatTimer = setInterval(() => {
       const st = this.states.get(chatId);
       if (st === undefined || st.messageId === null) return;

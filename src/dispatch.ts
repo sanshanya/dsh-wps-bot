@@ -68,8 +68,12 @@ export class WpsRouter {
     this.opts = opts;
   }
 
-  async handleEvent(ev: WpsEvent): Promise<Route> {
-    if (!this.opts.dedup.claim(ev.eventId)) return "duplicate";
+  /**
+   * 事件入口。调用者已 dedup.claim 过的场景（如 WpsBotCore 先查审批再分发）传 { preClaimed: true }，
+   * 本路由跳过重复 claim，只负责 route → record/release 联锁；普通直接调用 route 自带全量幂等闸。
+   */
+  async handleEvent(ev: WpsEvent, opts: { preClaimed?: boolean } = {}): Promise<Route> {
+    if (!opts.preClaimed && !this.opts.dedup.claim(ev.eventId)) return "duplicate";
     let accepted = false;
     try {
       const route = await this.route(ev);
@@ -98,7 +102,8 @@ export class WpsRouter {
     if (handle && direct && busy && !evidence) {
       // GA：运行中收到明确引用/私聊/@ → 复用原生 intervention seam 补充当前用户事实
       if (handle.inject(this.factify(ev))) {
-        await this.opts.ackIntervention?.(ev.chatId, ev.senderId, ev.senderName);
+        // ack 失败不阻止 accepted：inject 已成功，重发只会重复注入
+        await this.opts.ackIntervention?.(ev.chatId, ev.senderId, ev.senderName).catch(() => undefined);
         this.opts.onDispatched?.(ev.chatId, ev, "inject");
         return "inject";
       }
@@ -151,6 +156,22 @@ export class WpsRouter {
 
   entries(): IterableIterator<[string, ChatSessionHandle]> {
     return this.handles.entries();
+  }
+
+  /** 幂等三件套（approval reply 路线与 dispatch 路线共享 seen_events） */
+  claimLock(eventId: string): boolean {
+    return this.opts.dedup.claim(eventId);
+  }
+  async recordAcceptance(eventId: string): Promise<boolean> {
+    return this.opts.dedup.record(eventId);
+  }
+  releaseAcceptance(eventId: string): void {
+    this.opts.dedup.release(eventId);
+  }
+
+  /** 会话句柄报告忙闲（GA: session.is_running()）——宿主有线双向取：优先 handle.status，另去忙阅眼项。 */
+  busy(chatId: string): boolean {
+    return this.handles.get(chatId)?.status() === "running";
   }
 
   /** 宿主会话报错/中止的路径：把手柄从在册清出（下次 direct 重建）。 */

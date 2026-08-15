@@ -97,6 +97,7 @@ interface PendingApproval {
   userId: string;
   resolve: (reply: ReplyEvent) => void;
   timer: NodeJS.Timeout;
+  abortHook?: (() => void) | undefined;
 }
 
 export class WpsBotCore {
@@ -111,6 +112,19 @@ export class WpsBotCore {
   readonly cards: ProgressCards;
   private readonly windows = new ApprovalWindowStore();
   private readonly pendings = new Map<string, PendingApproval>();
+
+  /** P0-4：同 chatId 的单飞 ensure：两条并发 direct 不会为同一 sessionId 创交项。 */
+  private async singleFlightEnsure(chatId: string): Promise<ChatSessionHandle> {
+    const existing = this.pendingEnsures.get(chatId);
+    if (existing !== undefined) return existing;
+    const pending = this.sessions.ensure(chatId);
+    this.pendingEnsures.set(chatId, pending);
+    try {
+      return await pending;
+    } finally {
+      this.pendingEnsures.delete(chatId);
+    }
+  }
 
   constructor(opts: CoreBotOptions) {
     this.client = opts.client;
@@ -133,7 +147,8 @@ export class WpsBotCore {
 
     this.router = new WpsRouter({
       dedup: opts.dedup,
-      ensure: (chatId) => this.sessions.ensure(chatId),
+      // 改 buildCore：抱抱 chorine 整座 ensure 调用一个 p-cycle 的单飞避免并发创两次会话（报告 P0-4）
+      ensure: (chatId) => this.singleFlightEnsure(chatId),
       // GA accepts_progress_reply：quote == 在途进度卡 id 且会话在跑
       isProgressReply: (ev, busy) =>
         busy &&
@@ -161,14 +176,24 @@ export class WpsBotCore {
     });
   }
 
-  /** WPS 事件入口：首条 pending 回复原子消费，其余送分诊。 */
-  async handleIncomingEvent(ev: WpsEvent): Promise<Route | "approval-reply"> {
+  /**
+   * WPS 事件入口：先 answerer dedup（避免 WPS 重投让审批路径绕过幂等判据）→ pending 原子消费→ router。
+   * 已 accepted 的回复不会被二次计当（已被 record 过的事件重归时 rejective duplicate）。
+   */
+  async handleIncomingEvent(ev: WpsEvent): Promise<Route | "approval-reply" | "duplicate"> {
+    if (!this.router.claimLock(ev.eventId)) return "duplicate"; // 幂等均垫
     const pend = this.pendings.get(ev.chatId);
     if (pend !== undefined && ev.senderId === pend.userId) {
-      pend.resolve({ kind: "reply", text: ev.text.trim() });
-      return "approval-reply";
+      try {
+        pend.resolve({ kind: "reply", text: ev.text.trim() });
+        await this.router.recordAcceptance(ev.eventId);
+        return "approval-reply";
+      } catch (error) {
+        this.router.releaseAcceptance(ev.eventId);
+        throw error;
+      }
     }
-    return this.router.handleEvent(ev);
+    return this.router.handleEvent(ev, { preClaimed: true });
   }
 
   /** 审批 answerer（prepend waterfall；GA approval.py:86+ 矩阵） */
@@ -222,7 +247,7 @@ export class WpsBotCore {
     }
     void this.cards.phase(chatId, { phase: "等待人工审批" });
 
-    const reply = await this.waitReply(chatId, requester.userId);
+    const reply = await this.waitReply(chatId, requester.userId, req.signal);
     const decision = decideApproval(reply, allowWindow, chatId, requester.userId, reason, this.windows);
     await appendApprovalAudit(this.cfg.auditPath, decision.audit).catch((error: unknown) => {
       this.logger.warn("[wps-bot] audit append failed:", error);
@@ -237,6 +262,8 @@ export class WpsBotCore {
 
   /** 每 chat 当轮最高一个含 text 的 assistant 消息正文（GA terminal response 的最后一条）。 */
   private readonly turnFinalText = new Map<string, string>();
+  /** F4：同 chatId 的 ensure 单飞：两条并发 direct 并发只建一份会话句柄。 */
+  private readonly pendingEnsures = new Map<string, Promise<ChatSessionHandle>>();
 
   /** session/event 钩子：相位 + 终态回答缓冲 + turn/end 的验收/中断/泄流。
    *  wire 形状按 packages/core/session/src/types.ts:252（turn/end: { turn, reason: TurnEndReason }，kind ∈ completed/aborted/error/blocked/max-tokens）。
@@ -320,10 +347,44 @@ export class WpsBotCore {
     }
   }
 
+  /**
+   * agent/status 事件桥接——全部排队下游的挽救点：
+   * （report P0-1 的死锁场景修复）turn/end 迈用时 phase 仍 running；kick.finally 切 idle 时才真正
+   * 释放队列；这是必须 drain 的唯一正确时机。
+   */
+  async handleAgentStatus(agent: unknown, status: string): Promise<void> {
+    if (status !== "idle") return;
+    const chatId = this.chatForAgentFn(agent);
+    if (chatId === null) return;
+    await this.finalizeTurn(chatId);
+  }
+
+  /**
+   * agent/disposed（payload { agent }）：僵尸句柄清理——router.forget 以及 pending/card 也一并取消。
+   */
+  async handleAgentDisposed(payload: unknown): Promise<void> {
+    const agent = (payload as { agent?: unknown } | null | undefined)?.agent;
+    if (agent === undefined) return;
+    const chatId = this.chatForAgentFn(agent);
+    if (chatId === null) return;
+    this.router.forget(chatId);
+    this.cancelPending(chatId);
+    this.turnFinalText.delete(chatId);
+    await this.cards.finish(chatId);
+  }
+
   async finalizeTurn(chatId: string): Promise<void> {
     // N2：drain 表示本次又派发了下轮任务 → 卡片共养续更，只在真苦闲态（无交付+队列空）时收官
+    // 注意：turn/end 迈用 phase 可能是 running——drain 拒却不能收，预设 agent/status(idle) 时处理
     const dispatched = await this.router.drain(chatId).catch(() => false);
-    if (!dispatched && this.router.queued(chatId) === 0) await this.cards.finish(chatId);
+    if (!dispatched && this.router.queued(chatId) === 0 && !this.passBusy(chatId)) {
+      await this.cards.finish(chatId);
+    }
+  }
+
+  /** 会话是否仍在跑（GA: session.is_running()）——供 finalizeTurn 判回合轮次时钟。 */
+  private passBusy(chatId: string): boolean {
+    return this.router.busy(chatId);
   }
 
   /** 卸载/重启：失败 pending 回 cancelled；卡片完结；送因回退 commit 的 bash 记志全部留意。 */
@@ -344,21 +405,48 @@ export class WpsBotCore {
     pend.resolve({ kind: "cancelled" });
   }
 
-  private waitReply(chatId: string, userId: string): Promise<ReplyEvent> {
+  private waitReply(
+    chatId: string,
+    userId: string,
+    signal?: { aborted: boolean; addEventListener?: (evt: string, cb: () => void) => void },
+  ): Promise<ReplyEvent> {
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
         this.pendings.delete(chatId);
         resolve({ kind: "timeout" });
       }, this.cfg.approvalTimeoutMs);
-      this.pendings.set(chatId, {
+      const entry: PendingApproval = {
         userId,
         resolve: (reply) => {
           clearTimeout(timer);
+          if (entry.abortHook) entry.abortHook();
           this.pendings.delete(chatId);
           resolve(reply);
         },
         timer,
-      });
+      };
+      entry.abortHook = undefined;
+      if (signal?.aborted) {
+        resolve({ kind: "cancelled" });
+        return;
+      }
+      if (signal?.addEventListener) {
+        const onAbort = () => {
+          entry.resolve({ kind: "cancelled" });
+        };
+        signal.addEventListener("abort", onAbort);
+        entry.abortHook = () => {
+          const remover = (signal as unknown as { removeEventListener?: (evt: string, cb: () => void) => void })
+            .removeEventListener;
+          if (typeof remover === "function") {
+            remover.call(signal, "abort", onAbort);
+          }
+        };
+      }
+      // 同 chatId 有老 pending：先 flush 成 cancelled（避免新质竞老情）
+      const old = this.pendings.get(chatId);
+      if (old !== undefined) old.resolve({ kind: "cancelled" });
+      this.pendings.set(chatId, entry);
     });
   }
 }

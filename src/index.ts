@@ -285,12 +285,12 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
         cardUpdateMinIntervalMs: Math.max(0, (config.cardUpdateMinIntervalSeconds ?? 2) * 1000),
         cardSettle: config.cardSettle === "update" ? "update" : "recall",
         approvalMode: config.approvalMode === "disabled" ? "disabled" : "windows",
-        approvalTimeoutMs: Math.max(1000, (config.approvalTimeoutSeconds ?? 300) * 1000),
+        approvalTimeoutMs: Math.max(1000, Math.max(1, config.approvalTimeoutSeconds ?? 300) * 1000),
         allowWindow: config.allowWindow !== false,
         auditPath: config.auditPath ?? "runtime/wps-bot-approval.jsonl",
         ackInterventionText:
           config.ackInterventionText ?? "已收到补充信息，当前任务会在下一轮处理。",
-        deliverChunks: config.deliverChunks ?? 4500,
+        deliverChunks: Math.max(1, config.deliverChunks ?? 4500), // F7：<=0 会让 splitMarkdown 死循环
       },
     };
     return new WpsBotCore(opts);
