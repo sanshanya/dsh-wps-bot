@@ -119,6 +119,11 @@ export class TaskDeliveryService {
       }
     } catch (error) {
       this.logger.error("[wps-bot] deliver failed:", error);
+      // L3-1：发送失败必须家达——对用户可见的兜底通告（不能失败就回家安静）
+      await this.client
+        .sendMarkdownSplit(chatId, "正式回答发送失败，请查看本条上下文或重试。", null, this.deliverChunks)
+        .catch(() => undefined);
+      throw error;
     }
   }
 }

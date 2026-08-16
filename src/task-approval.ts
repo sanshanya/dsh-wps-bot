@@ -126,7 +126,8 @@ export function decideApproval(
       userId,
       approved: true,
       reason,
-      ...(minutes > 0 ? { grantMinutes: minutes } : {}),
+      // L3-7：非开窗分支不得写 grantMinutes（审计名实不符）——改为请求分钟入 feedback
+      ...(minutes > 0 ? { requestMinutes: minutes } : {}),
     },
   };
 }

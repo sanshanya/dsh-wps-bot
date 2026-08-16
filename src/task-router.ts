@@ -4,6 +4,7 @@
 
 import type { WpsEvent } from "./protocol.ts";
 import type { EventDedup } from "./dedup.ts";
+import { parseTaskKey } from "./task-keys.ts";
 
 export interface ChatSessionHandle {
   sessionId: string;
@@ -111,7 +112,7 @@ export class WpsRouter {
   /** 路由前嗅探：返回 intend 的 sessionId（不落队）——materialize 需目标任务盘。 */
   previewTarget(ev: WpsEvent): string | null {
     if (ev.quoteMsgId.length > 0) {
-      const inherited = this.lookupQuote(ev.quoteMsgId);
+      const inherited = this.lookupQuote(ev.quoteMsgId, ev.chatId);
       if (inherited !== null) return inherited.sessionId;
       const cardOwner = this.opts.quoteTaskOwner?.(ev.quoteMsgId);
       const cardTask = cardOwner !== undefined && cardOwner !== null ? (this.tasks.get(cardOwner)?.handle?.status() === "running" ? this.tasks.get(cardOwner) : undefined) : undefined;
@@ -126,7 +127,7 @@ export class WpsRouter {
   private async route(ev: WpsEvent): Promise<Route> {
     // 1) quote 继承
     if (ev.quoteMsgId.length > 0) {
-      const inherited = this.lookupQuote(ev.quoteMsgId);
+      const inherited = this.lookupQuote(ev.quoteMsgId, ev.chatId);
       if (inherited !== null) {
         if (inherited.ownerId !== ev.senderId && !inherited.participants.some((p) => p.userId === ev.senderId)) {
           inherited.participants.push({ userId: ev.senderId, name: ev.senderName });
@@ -135,8 +136,9 @@ export class WpsRouter {
       }
       // in-flight 进度卡 quote 的 GA 特殊面：命中在跑任务时按 inject 走
       const cardOwner = this.opts.quoteTaskOwner?.(ev.quoteMsgId);
-      if (cardOwner !== undefined && cardOwner !== null && this.tasks.get(cardOwner)?.handle?.status() === "running") {
-        const task = this.tasks.get(cardOwner);
+      const cardTask0 = cardOwner !== undefined && cardOwner !== null ? this.tasks.get(cardOwner) : undefined;
+      if (cardTask0 !== undefined && cardTask0.chatId === ev.chatId && cardTask0.handle?.status() === "running") {
+        const task = cardTask0;
         if (task !== undefined) return this.dispatchToTask(task, ev);
       }
     }
@@ -159,17 +161,19 @@ export class WpsRouter {
    *  落底：registry 未注入时查热件 outboundIds（兼容单测路径）。 */
   /** 注册表命中但任务不在册（重启后/会话已裁）→ 从键义重立任务状态（resume 会话来路） */
   private reviveTask(sessionId: string): TaskState | null {
-    const parts = ((k) => { const se = k.slice(8).split(":"); return se.length === 3 ? se : null; })(sessionId);
+    const parts = parseTaskKey(sessionId);
     if (parts === null) return null;
-    const [chatId, ownerId, taskId] = parts as [string, string, string];
+    const { chatId, ownerId, taskId } = parts;
     this.opts.logger?.warn(`[wps-bot] 引用继承 revive 旧任务会话 ${sessionId}`);
     return this.createTask(chatId, ownerId, ownerId, taskId);
   }
 
-  private lookupQuote(quoteMsgId: string): TaskState | null {
+  private lookupQuote(quoteMsgId: string, eventChatId?: string): TaskState | null {
     const regHit = this.opts.quoteLookup?.lookup(quoteMsgId);
     if (regHit !== undefined) {
       if (regHit === null) return null;
+      // A2-1：跨 chat 引用不接——命中 chat 与事件 chat 必须一致
+      if (eventChatId !== undefined && regHit.chatId !== eventChatId) return null;
       return this.tasks.get(regHit.sessionId) ?? this.reviveTask(regHit.sessionId);
     }
     for (const [, task] of this.tasks) {
@@ -239,31 +243,37 @@ export class WpsRouter {
 
   async drain(sessionId: string): Promise<boolean> {
     const task = this.tasks.get(sessionId);
-    const handle = task?.handle;
+    if (task === undefined || task.ensuring === true) return false; // A2-5：在途 ensure 不再双开
+    const handle = task.handle;
     if (handle && handle.status() === "running") return false;
     const queue = this.queues.get(sessionId);
     if (!queue || queue.length === 0) return false;
-    const next = queue.shift();
-    if (next === undefined || task === undefined) return false;
+    const next = queue[0];
+    if (next === undefined) return false;
     let target = handle;
     if (target === undefined) {
-      // P0-4/P-C：ensure 在途也算活任务（并发第二条不再另建会话）
+      // A2-2：ensure 先成功后 shift——失败保队首不丢
       task.ensuring = true;
       try {
         target = await this.opts.ensure(sessionId);
         task.handle = target;
+      } catch (error) {
+        this.opts.logger?.warn(`[wps-bot] ensure failed, 队首保留: ${String(error)}`);
+        return false;
       } finally {
         task.ensuring = false;
       }
     }
+    queue.shift();
     try {
       this.opts.onDispatched?.(sessionId, next, "enqueue");
       await target.followup(defaultFactify(next));
       return true;
     } catch (error) {
+      // A2-3：followup 失败回队首不抛——防 dedup release + 队列副本双轨
       queue.unshift(next);
       this.opts.logger?.warn(`[wps-bot] followup failed, requeued in front: ${String(error)}`);
-      throw error;
+      return false;
     }
   }
 
@@ -313,8 +323,10 @@ export class WpsRouter {
   }
 
   /** 宿主会话报错/中止的路径：把手柄从在册清出。 */
+  /** A2-9：forget 必须清队——处置后已 record 的排队事件不成孤儿（保守参与者也清） */
   forget(sessionId: string): void {
     this.tasks.delete(sessionId);
     this.outboundIds.delete(sessionId);
+    this.queues.delete(sessionId);
   }
 }

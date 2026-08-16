@@ -171,7 +171,8 @@ export function clearDisposedHandles(
   const cleared: string[] = [];
   for (const [chatId, entry] of chats) {
     if (entry.handle?.agent !== undefined && entry.handle.agent === agent) {
-      entry.handle = undefined;
+      // A1-1：整条删，不只清 handle——任务键无界增长防项
+      chats.delete(chatId);
       cleared.push(chatId);
     }
   }
@@ -411,13 +412,17 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
     await core.handleIncomingEvent(ev);
   }
 
+  let closed = false;
+  let providerDisposer: (() => void) | undefined;
   const bootstrap = (async () => {
     dedup = await EventDedup.load({
       limit: 2048,
       path: config.seenEventsPath ?? "runtime/wps-bot-seen-events.jsonl",
     });
+    if (closed) return;
     core = buildCore(dedup);
     await core.loadRegistry().catch((error) => logger.warn('[wps-bot] quoteRegistry load 失败:', error));
+    if (closed) return;
     const dispatcher = new Dispatcher().registerFunc(
       "kso.app_chat.message.create",
       async (event: unknown) => {
@@ -458,9 +463,10 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
       } else {
         const owned = core;
         try {
-          userQuestions.registerProvider({
+          const disposer = userQuestions.registerProvider({
             ask: (request: unknown) => owned.askUserQuestion(request as Parameters<typeof owned.askUserQuestion>[0]),
           });
+          if (typeof disposer === "function") providerDisposer = disposer as () => void;
           logger.info("[wps-bot] user-questions provider 已注册");
         } catch (error) {
           if ((error as { code?: string }).code === "DUPLICATE_PROVIDER") {
@@ -488,12 +494,14 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
       logger.warn("[wps-bot] tools 服务未挂载——finish_task/reply 缺位（组合层补挂）");
     }
 
+    if (closed) return;
     eventClient = factory({ appId: clientId, appSecret: clientSecret, dispatcher });
     // 观测锚点必须先行：open-event-sdk 1.0.1 的 start() 在连接存活期间不 resolve——
     // 放 await 后 = 永不打印，stop 时反补一条假信号（二度报告 §三.8 实证）。
     logger.info(
       `[wps-bot] listening (approvalMode=${String(config.approvalMode)}, cardMode=${String(config.cardMode)}, botDisplayName=${config.botDisplayName})`,
     );
+    if (closed) return;
     await eventClient.start();
   })();
 
@@ -506,14 +514,16 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
   ctx.effect(() => {
     void bootstrap.catch(() => undefined);
     return async () => {
+      closed = true;
+      try { providerDisposer?.(); } catch { /* 静默 */ }
+      providerDisposer = undefined;
       // 清理序：先断入站（stop）→ 再收业务（shutdown）→ 最后 agent dispose
       try {
         eventClient?.stop(); // SDK 1.0.1 stop(): void（无 await）
       } catch {
         /* 静默 */
       }
-      await core?.shutdown().catch(() => undefined);
-      // ACP 纪律：父 agent dispose 前排干 continuable 子代理（服务缺席=组合无 subagents，跳过）
+      // ACP/L1-5 裁：子代理排水先于业务收口（与 PROJECT 拆分契约同序）
       const subagents = (ctx as unknown as {
         get?: (key: string) => unknown;
       }).get?.("subagents") as { drainContinuableDescendants?: (agents: unknown[]) => Promise<unknown> } | undefined;
@@ -522,6 +532,7 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
           .drainContinuableDescendants([...chats.values()].map((entry) => entry.handle?.agent).filter(Boolean))
           .catch(() => undefined);
       }
+      await core?.shutdown().catch(() => undefined);
       const disposals = [...chats.values()]
         .filter((entry) => entry.handle !== undefined)
         .map((entry) => (entry.handle as AgentHandleLike).dispose());

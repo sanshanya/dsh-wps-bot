@@ -192,7 +192,8 @@ test("分诊矩阵：followup 失败 → 补充回队首，不重释已投递", 
     },
   };
   const router = new WpsRouter({ dedup: d, ensure: async () => handle });
-  await assert.rejects(router.handleEvent(ev({ eventId: "f1", isPrivate: true })), /first attempt failed/);
+  // A2 裁：followup 失败回队首不抛——dedup accepted,队列自持待再触发下（不借 WPS 重投）
+  await router.handleEvent(ev({ eventId: "f1", isPrivate: true }));
   assert.equal(handle.followupLog.length, 0);
   await router.drain("c1");
   assert.equal(handle.followupLog.length, 0); // 第二次成功无日志，只计 not throw

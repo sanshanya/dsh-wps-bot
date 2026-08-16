@@ -1048,7 +1048,7 @@ test("strictFinishContract=true：无 finish_task 的 completed 走 unavailable 
   rig.handle.running = false;
   rig.core.handleSessionEvent("sess:c1", { type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } });
   await new Promise((r) => setTimeout(r, 60));
-  const notifyTexts = rig.client.markdowns?.map((m: { markdown: string }) => m.markdown) ?? [];
+  const notifyTexts: string[] = [];
   // 宽松面下同一流程会发「无法继续完成」(G3);strict 下走的是 normalizationNotice——照看 client.submits
   const allOut = [...rig.client.splits.map((s) => s.text), ...notifyTexts];
   assert.ok(allOut.some((t) => t.includes("无法") || t.includes("unavailable") || t.includes("服务")), `strict+无finish 须致 unvailable 面达: ${JSON.stringify(allOut).slice(0,120)}`);

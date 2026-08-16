@@ -29,6 +29,8 @@ export interface ApprovalAuditEntry {
   feedback?: string;
   windowExpiresAt?: number;
   grantMinutes?: number;
+  /** 请求过但未生效的窗口分钟（审计名实分离）。 */
+  requestMinutes?: number;
   toolName?: string;
   callId?: string;
   reason?: string;

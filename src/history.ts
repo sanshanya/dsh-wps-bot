@@ -32,10 +32,9 @@ export class HistoryStore {
   async record(ev: WpsEvent): Promise<void> {
     const file = this.fileOf(ev.chatId);
     const prev = this.chains.get(file) ?? Promise.resolve();
-    const next = prev
-      .then(() => this.recordOnce(file, ev))
-      .catch(() => undefined); // 链在所有权下不失锁定；单件失败不误次行
-    this.chains.set(file, next);
+    // L4-1：返回未 catch 的链——调用面看到失败(true-error perceivable)；链本身仍保序不锁
+    const next = prev.then(() => this.recordOnce(file, ev));
+    this.chains.set(file, next.catch(() => undefined));
     await next;
   }
 

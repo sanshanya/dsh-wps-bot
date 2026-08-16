@@ -68,7 +68,7 @@ docs/references.md       构成依据、SDK/wps-docs 索引与抓取清单
 ## 文件与历史面
 
 - 任务写入隔离：`workspaceRoot/<chatId>/<userId>/<taskId>/{downloads,artifacts,work}`；downloads 键 `sha256(message_id)[:12]/NN_safeName`；artifacts 经 `[[attach:artifacts/FILE]]` 出群。
-- 跨群历史只读：`workspaceRoot/history/<chatId>/{messages.jsonl,files/}`，全任务可读、无群级 gate；读操作写 JSONL 审计（谁/哪个 session/读了什么）。
+- 跨群历史只读：`workspaceRoot/history/<chatId>/history.jsonl`，全任务可读、无群级 gate；读操作写 JSONL 审计（谁/哪个 session/读了什么）。
 - 证据落盘（R4）：不可归一节点、云文档链接、shared_doc_ids 三路由 JSONL 落盘（`unparsed_content.jsonl`/`cloud_docs.jsonl`/`shared_doc_ids.jsonl`，路径随事实进 prompt）——未知节点不再静默蒸发。
 - `search_wps_history({chatId?,userId?,since?,until?,keywords[],limit})` 只读模型工具；模型自取旧证据继续工作。
 
@@ -87,7 +87,6 @@ Markdown 4500 分段（CRLF 归一/自然段/硬切 UTF-16 代理体守卫/首�
 | 拆分(§4) | god class 拆件：bot 978→574（task-approval/task-questions/task-delivery/history/channel-tools 归位）；dispatch 正名 task-router | ✅ dsh-wps-bot@0.0.1 施工件—`ded1e0b`+后续 |
 | 工具接线补救 | channel-tools 接线回归（注册面连回办；host-boot 三钉名） | ✅ 本轮 |
 | inject 硬依赖判决 | `inject=["agents","userQuestions","tools"]`保留（服务名不等包名；组合现行即在场；最低组合面声明在案） | 判决在案 |
-
 | P-C 分叉主体 | B 路由全键(sessionId=chat×owner×taskId/并行任务/quote 注册表消费+participants 增员)+any-of 审批+窗键 sessionKey+三元组真值+任务工作区分盘 | ✅ `4e8be7e`+`d5d3bff` |
 | P-D 历史面 | inbound 全件归档 ws/history/<chat>.jsonl+searchHistory+search_wps_history 工具+读审计行 | ✅ `6f38296` |
 | 发版闸 | RELEASE 仪式文书 | ✅ a6bea45；U1/U2 用户域欠账目 |
@@ -101,7 +100,7 @@ Markdown 4500 分段（CRLF 归一/自然段/硬切 UTF-16 代理体守卫/首�
 - Session/审批/窗为进程内状态；重启清窗；accepted 任务不持久重放。
 - 归档淘汰规则（P-D 结案裁定）：
   - `quote-registry.jsonl`：7 天 / 2000 条双闸（超出整表重写，文件即事实）；
-  - `ws/history/<chat>/history.jsonl`：单文件在期无自动淘汰——每次重写超 1 MB 自裁（读取最重 N=40 尾部法；大文件读慢才收紧，现文：「10 万条将重战收掞」）；
+  - `ws/history/<chat>/history.jsonl`：单文件在期无自动淘汰——append-only，不在期淘汰（目录 key 已按 chat 域隔离，每聊天历史随话题成长；检索面 ever-Eager N=40 预取限制检索成本）；
   - `ws/<chat>/<owner>/<task>/`：任务目录无自动删——完成任务 30 天后可人工清底（机制面不清除，避免观察/审计脱节）。
 - 旧 GA 服务与我并存时会共用入站（单播律下两者随机丢消息）——生产部署须独占连接。
 - p2p 全量推送未探测（引用继承在私聊可用性待证）。

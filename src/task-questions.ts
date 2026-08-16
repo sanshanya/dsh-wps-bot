@@ -67,6 +67,12 @@ export class TaskQuestionsService {
         : await this.deps.client.resolveMention(requester.userId, requester.name).catch(() => null);
     const messageIds = await this.deps.client.sendMarkdownSplit(chatId, parts.join("\n\n"), mention);
 
+    // L3-4：先验 aborted 再发包；监听挂后须可摘（abortHook）
+    if (request.signal?.aborted === true) {
+      const e0 = new Error("wps-bot: 租答请求遭中止");
+      (e0 as { code?: string }).code = "ASK_ABORTED";
+      throw e0;
+    }
     const text = await new Promise<string>((resolve, reject) => {
       const selfDelete = (entry: PendingQuestion) => {
         if (this.pending.get(sessionId) === entry) this.pending.delete(sessionId);
@@ -91,11 +97,21 @@ export class TaskQuestionsService {
       const oldPending = this.pending.get(sessionId);
       if (oldPending !== undefined) oldPending.cancel(Object.assign(new Error("wps-bot: 新问件覆盖了旧问相答允"), { code: "ASK_OVERRIDDEN" }));
       this.pending.set(sessionId, entry);
-      request.signal?.addEventListener?.("abort", () => {
-        const e = new Error("wps-bot: 租答请求遭中止");
-        (e as { code?: string }).code = "ASK_ABORTED";
-        entry.cancel(e);
-      });
+      if (request.signal?.addEventListener) {
+        const onAbort = () => {
+          const e = new Error("wps-bot: 租答请求遭中止");
+          (e as { code?: string }).code = "ASK_ABORTED";
+          entry.cancel(e);
+        };
+        request.signal.addEventListener("abort", onAbort);
+        const withRemoval = <A,>(fn: (arg: A) => void) => (arg: A) => {
+          const remover = (request.signal as unknown as { removeEventListener?: (evt: string, cb: () => void) => void }).removeEventListener;
+          if (typeof remover === "function") remover.call(request.signal, "abort", onAbort);
+          fn(arg);
+        };
+        entry.resolve = withRemoval(entry.resolve);
+        entry.cancel = withRemoval(entry.cancel);
+      }
     });
 
     return {

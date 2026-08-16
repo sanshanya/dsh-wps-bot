@@ -83,7 +83,8 @@ test("clearDisposedHandles：payload 是 { agent } 包装（runtime-types.ts:168
   ]);
   const cleared = clearDisposedHandles(chats, { agent: deadAgent });
   assert.deepEqual(cleared, ["c1"]);
-  assert.equal(chats.get("c1")!.handle, undefined);
+  // L1-1 新表义：整条已删（防 O(n) 退化）
+  assert.equal(chats.get("c1"), undefined);
   assert.equal(chats.get("c2")!.handle!.agent, liveAgent);
 
   // 全包形状（裸 Agent）不再清——这个正是 N1

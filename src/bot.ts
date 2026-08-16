@@ -334,11 +334,12 @@ export class WpsBotCore {
   }
 
   /** GA:339 落盘序——downloads/{sha256(eventId)[:12]}/{NN}_{safeName|kind}；逐件容错进 observations。 */
-  /** P0-2：出站 id 统一登记（卡片/文本/文件同口）——registry（持久真源）+ router 热件同写。 */
+  /** P0-2+A2-7：出站 id 单源登记——registry 唯一真源（热件在 lookupQuote 已衰双轨后不再白写；失败告警不静监） */
   private registerOutboundIds(sessionId: string, chatId: string, ids: string[]): void {
     if (ids.length === 0) return;
-    this.router.registerOutbound(sessionId, ids);
-    void this.quoteRegistry.register(ids, sessionId, chatId).catch(() => undefined);
+    this.quoteRegistry.register(ids, sessionId, chatId).catch((error) => {
+      this.logger.warn("[wps-bot] quoteRegistry 登记失败:", error);
+    });
   }
 
   private async materializeAttachments(ev: WpsEvent): Promise<void> {
@@ -534,7 +535,8 @@ export class WpsBotCore {
         ? null
         : await this.client.resolveMention(requester.userId, requester.name).catch(() => null);
     try {
-      await this.client.sendMarkdownSplit(parseTaskKey(chatId)?.chatId ?? chatId, interruptionNotice(reason, chatId), mention);
+      const displayChatId = parseTaskKey(chatId)?.chatId ?? chatId;
+      await this.client.sendMarkdownSplit(displayChatId, interruptionNotice(reason, displayChatId), mention);
     } catch (error) {
       this.logger.warn("[wps-bot] interruption notice failed:", error);
     }

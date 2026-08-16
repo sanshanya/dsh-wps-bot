@@ -1,6 +1,6 @@
 /**
  * botMessageId→sessionId 注册表（契约 D1）：引用继承的查件面。
- * 7 天 / 2000 条双闸，JSONL 追加+加载+超闸重写（dedup 同构件）。
+ * 7 天 / 2000 条双闸，JSONL 整表重写+加载+双闸疏离(7 天/2000)（dedup 同构件）。
  *
  * @module dsh-wps-bot/quote-registry
  */
