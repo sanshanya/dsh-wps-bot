@@ -84,8 +84,8 @@ Markdown 4500 分段（CRLF 归一/自然段/硬切 UTF-16 代理体守卫/首�
 | Phase 0.5 投递裁决 |「纯引用不@」=非@特例，抓包结论③已覆盖：**不推**。@律裁定：群内继承强制**引用并@**(07:10:20 实证秒通);非@ 内容看板=REST 补拉，不在 v0.1 范围 | ✅ 裁决落(不再探) |
 | P-A 纯增量 | finish_task（宽松默认）+reply+audit 三元组+D1 注册表模块 | ✅ c294126+6f…（工具对 registry 通道注册；P-C 时键迁移） |
 | P-B 通道代答 | user-questions 接通道（复用答允机器，模板分面） | ✅ 964db43 |
-| P-C 分叉主体 | B 路由全键+C 审批模型+D3 workspace 迁移+G5 翻案+群问文案同步 | 待 0.5 裁决后治行 |
-| P-D 历史面 | history 归档+search 工具+读审计 | 未做（P-C 后） |
+| P-C 分叉主体 | B 路由全键(sessionId=chat×owner×taskId/并行任务/quote 注册表消费+participants 增员)+any-of 审批+窗键 sessionKey+三元组真值+任务工作区分盘 | ✅ `4e8be7e`+`d5d3bff` |
+| P-D 历史面 | inbound 全件归档 ws/history/<chat>.jsonl+searchHistory+search_wps_history 工具+读审计行 | ✅ `6f38296` |
 | 发版闸 | RELEASE 仪式文书 | ✅ a6bea45；U1/U2 用户域欠账目 |
 
 ## 运行与检查
