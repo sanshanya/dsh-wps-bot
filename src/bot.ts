@@ -116,6 +116,8 @@ export interface CoreBotOptions {
     shutdownDeadlineMs?: number;
     /** 引用继承注册 table 档（默认 workspaceRoot/quote-registry.jsonl；null=内存态）。 */
     quoteRegistryPath?: string | null;
+    /** 严格完结契约（PROJECT.md 契约案）：true=无 finish_task 不落交付而送「unavailable」；false=宽松回落末条文本。 */
+    strictFinishContract?: boolean;
   };
 }
 
@@ -417,10 +419,18 @@ export class WpsBotCore {
   }
 
   /** ga_runtime.py:272-289 [[attach:]]：artifacts 根内现存文件；违规/缺失记 errors；marker 剥离。 */
+  /** 任务工作区根：任务键形态时按 ws/<chat>/<owner>/<task>，旧形态回落全局 ws 根。 */
+  private taskRootOf(sessionIdOrChat: string): string {
+    const parsed = parseTaskKey(sessionIdOrChat);
+    if (parsed === null) return resolve(resolve(this.cfg.workspaceRoot));
+    return resolve(this.cfg.workspaceRoot, parsed.chatId, parsed.ownerId, parsed.taskId);
+  }
+
   private extractArtifacts(
     text: string,
+    taskRoot: string,
   ): { cleaned: string; files: Array<{ marker: string; candidate: string }>; errors: string[] } {
-    const workspaceRoot = resolve(this.cfg.workspaceRoot);
+    const workspaceRoot = taskRoot;
     const artifactRoot = resolve(workspaceRoot, "artifacts");
     const files: Array<{ marker: string; candidate: string }> = [];
     const errors: string[] = [];
@@ -601,8 +611,10 @@ export class WpsBotCore {
     const reply = await this.waitReplyFor(sessionId, allowed, req.signal);
     const decisionUserId = reply.kind === "reply" ? reply.userId ?? requester.userId : requester.userId;
     const decision = decideApproval(reply, allowWindow, chatId, decisionUserId, reason, this.windows, sessionId);
+    // 三元组全态覆盖（reply/timeout/cancelled/auto-window 一律载账 owner/requester/sessionId）
+    withTriple(decision.audit, sessionId, owner, requester);
     if (reply.kind === "reply") {
-      withFields(decision.audit, sessionId, owner, requester, decisionUserId);
+      decision.audit.approverUserId = decisionUserId;
     }
     await appendApprovalAudit(this.cfg.auditPath, decision.audit).catch((error: unknown) => {
       this.logger.warn("[wps-bot] audit append failed:", error);
@@ -658,7 +670,15 @@ export class WpsBotCore {
           if (registered !== undefined) this.finishDeliverable.delete(chatId);
           const skipFallback = this.repliedTurn.get(chatId) === (this.currentTurn.get(chatId) ?? 0) && this.repliedTurn.has(chatId);
           const finalText = registered ?? (skipFallback ? undefined : this.turnFinalText.get(chatId));
-          if (finalText !== undefined && finalText.length > 0) {
+          if (
+            this.cfg.strictFinishContract === true &&
+            registered === undefined &&
+            this.repliedTurn.get(chatId) !== (this.currentTurn.get(chatId) ?? 0)
+          ) {
+            // 严格完结：无 finish_task 不落交付——显式通告（审计面外发）
+            this.turnFinalText.delete(chatId);
+            void this.notifyInterrupted(chatId, "unavailable", `${chatId}:${turnNo}:strict-finish-per-contract`);
+          } else if (finalText !== undefined && finalText.length > 0) {
             this.turnFinalText.delete(chatId);
             // B4：交付结果回填卡片真值——收官延后到 deliver 落地（真值到时才可见）
             deferred = true;
@@ -697,7 +717,7 @@ export class WpsBotCore {
   /** GA app.py:372-395 交付序：正文→产物逐个 upload→失败逐条 markdown 通告。 */
   async deliver(chatId: string, text: string): Promise<void> {
     try {
-      const { cleaned, files, errors } = this.extractArtifacts(text);
+      const { cleaned, files, errors } = this.extractArtifacts(text, this.taskRootOf(chatId));
       const deliveryErrors = [...errors];
       if (cleaned.length > 0 || files.length === 0) {
         const ids = await this.client.sendMarkdownSplit(chatId, cleaned, null, this.cfg.deliverChunks);

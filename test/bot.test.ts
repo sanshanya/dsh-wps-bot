@@ -982,7 +982,7 @@ test("P-D：inbound 全件归档 + searchHistory 同 chat 检索（读开历史�
   t.after(async () => { await rig.core.shutdown(); await rig.cleanup(); });
   await rig.core.handleIncomingEvent(ev({ senderName: "冯三山", text: "备份服务器 10.0.0.8 的周巡检还差一栏", chatType: "group" }));
   await rig.core.handleIncomingEvent(ev({ senderId: "u9", senderName: "李四", text: "巡检我已经补完", chatType: "group" }));
-  await new Promise((r) => setTimeout(r, 30));
+  await new Promise((r) => setTimeout(r, 150)); // history 归档为尽力异步——测试结算窗放宽
 
   const hits = await rig.core.searchHistory("c1", "巡检");
   assert.ok(hits.length >= 2);

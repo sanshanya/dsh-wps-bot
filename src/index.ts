@@ -4,7 +4,7 @@
  * @module dsh-wps-bot
  */
 
-import { isAbsolute } from "node:path";
+import { isAbsolute, join } from "node:path";
 
 import { Client as WpsEventClient, Dispatcher, LogLevel } from "open-event-sdk";
 
@@ -24,6 +24,7 @@ import {
 import type { ChatSessionHandle } from "./dispatch.ts";
 import { parseTaskKey } from "./task-keys.ts";
 import { appendApprovalAudit } from "./audit.ts";
+import { defineTool as realDefineTool } from "@deepseek-ai/dsh-tools";
 import {
   WpsBotCore,
   type CoreBotOptions,
@@ -250,9 +251,13 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
     // P0-1 修复（评估：旧线双前缀实证）：入参即任务会话键（router 源头保证），
     // 非任务键形态才回包（p2p 直通/测试 fake 面）；禁止裸包。
     const sessionId = SessionId(parseTaskKey(chatId) !== null ? chatId : `wps-bot:${chatId}`);
+    const taskParts = parseTaskKey(chatId);
+    const cwd = taskParts !== null
+      ? join(config.workspaceRoot || process.cwd(), taskParts.chatId, taskParts.ownerId, taskParts.taskId)
+      : (config.workspaceRoot || process.cwd());
     const handle = (await createOrResume(ctx.agents, {
       sessionId,
-      cwd: config.workspaceRoot || process.cwd(),
+      cwd,
       agentOptions: {
         provider: config.provider ?? "deepseek-official",
         model: config.model ?? "deepseek-v4-flash",
@@ -524,13 +529,14 @@ function registerHistoryTool(
   chatForAgent: (agent: unknown) => string | null,
   auditAppend: (entry: import("./audit.ts").ApprovalAuditEntry) => Promise<void>,
 ): void {
-  const defineTool = (opts: Record<string, unknown>) => opts;
-  registry.register?.(defineTool({
+  // 真 defineTool（P0-3 修复：弃手搓——真实校验输入面一致）
+  registry.register?.(realDefineTool({
     name: "search_wps_history",
     description: "检索本对话（群/p2p）的聊天历史归档，按关键词面出最近条目；历史为读开素材，不做私权。",
     parameters: {
       query: { type: "string", required: true, description: "关键词（空白分隔，任一命中即出件）。" },
       limit: { type: "number", default: 5, description: "最多返回条数（上限 20）。" },
+      chat_id: { type: "string", default: "", description: "可选：跨群读开——精确 chat id；缺省=当前对话。" },
     },
     output: {
       schema: {
@@ -546,7 +552,9 @@ function registerHistoryTool(
       const sessionId = chatForAgent(exec.agent);
       const chatId = sessionId !== null ? (parseTaskKey(sessionId)?.chatId ?? sessionId) : null;
       if (chatId === null) return { hits: [] };
-      const hits = await owned.searchHistory(chatId, String(args.query), Math.min(20, Math.max(1, args.limit ?? 5)));
+      const chatIdArg = (args as unknown as { chat_id?: string }).chat_id;
+      const targetChat = typeof chatIdArg === "string" && chatIdArg.length > 0 ? chatIdArg : chatId;
+      const hits = await owned.searchHistory(targetChat, String(args.query), Math.min(20, Math.max(1, args.limit ?? 5)));
       // P-D 读审计：检索动作照同组审计行载账
       await auditAppend({
         timestamp: Math.floor(Date.now() / 1000),
@@ -568,9 +576,9 @@ function registerChannelTools(
   act: (kind: "finish" | "reply", chatId: string, text: string) => Promise<void> | void,
   chatForAgentFn: (agent: unknown) => string | null,
 ): void {
-  const defineTool = (opts: Record<string, unknown>) => opts;
+  // 真 defineTool（P0-3 修复：弃手搓——真实校验输入面一致）
   const make = (kind: "finish" | "reply", name: string, description: string) =>
-    defineTool({
+    realDefineTool({
       name,
       description,
       parameters: {
