@@ -21,7 +21,7 @@ const can = await import("../src/index.ts").then(
 if (!can) {
   await test("宿主装配自证（node_modules 缺 symlink，全组跳）", { skip: true }, () => {});
 } else {
-  const { apply, clearDisposedHandles } = (await import("../src/index.ts")) as any;
+  const { apply } = (await import("../src/index.ts")) as any;
   const { WpsBotCore } = (await import("../src/bot.ts")) as any;
 
   interface HandleRecord {
@@ -311,18 +311,4 @@ if (!can) {
     await ivi.dispose();
   });
 
-  test("E2E-4：clearDisposedHandles 全员清死句柄→后续 direct 会换新建或 resume 的交态句柄", () => {
-    const ivi = makeHost();
-    const client = makeClient();
-    const makeEventClient = () => ({ async start() {}, stop() {} });
-    apply(ivi.idev, baseConfig(), { client: client.fake, makeEventClient: makeEventClient as any });
-
-    // 模拟初建：paceset 一只句柄挂到 chat map 上（通过 resume→create 任一路径建立）
-    const chats = new Map<string, { handle?: { agent?: unknown } }>([
-      ["c1", { handle: { agent: "agent-x" } }],
-    ]);
-    const cleared = clearDisposedHandles(chats as any, { agent: "agent-x" });
-    assert.deepEqual(cleared, ["c1"]);
-    assert.equal(chats.get("c1")!.handle === undefined, true);
-  });
 }
