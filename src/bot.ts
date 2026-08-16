@@ -573,6 +573,8 @@ export class WpsBotCore {
       const entry: PendingApproval = {
         userId,
         resolve: (reply) => {
+          if ((entry as { settled?: boolean }).settled === true) return; // 迟来答允不得双答（audit/ack 单发）
+          (entry as { settled?: boolean }).settled = true;
           clearTimeout(timer);
           if (entry.abortHook) entry.abortHook();
           selfDelete(entry);
