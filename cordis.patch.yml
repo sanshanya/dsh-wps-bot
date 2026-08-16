@@ -15,5 +15,5 @@
 - insert:
     - id: wps-bot
       name: 'dsh-wps-bot'
-      disabled: true
+      disabled: false
       config: {}
