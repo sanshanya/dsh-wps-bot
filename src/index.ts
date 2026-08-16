@@ -477,7 +477,9 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
   })();
 
   bootstrap.catch((error: unknown) => {
+    // 静默病灶实证：bsl 组合 cordis logger 无处落字——boot 失败必须同时砸 stderr（F5a 转正）
     logger.error("[wps-bot] bootstrap failed:", error);
+    console.error("[wps-bot] bootstrap failed:", error);
   });
 
   ctx.effect(() => {
@@ -520,6 +522,14 @@ function registerChannelTools(
       description,
       parameters: {
         text: { type: "string", required: true, description: "要发给对话的文本。" },
+      },
+      output: {
+        schema: {
+          type: "object",
+          additionalProperties: false,
+          properties: { delivered: { type: "boolean", required: true } },
+        },
+        render: (_args: unknown, value: unknown) => [{ type: "text", text: JSON.stringify(value) }],
       },
       async execute(args: { text: string }, exec: { agent?: unknown }) {
         const chatId = chatForAgentFn(exec?.agent);
