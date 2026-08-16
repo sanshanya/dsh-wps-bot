@@ -21,9 +21,10 @@ const NPM = process.platform === 'win32' ? 'npm.cmd' : 'npm'; // c4：Windows �
 const root = resolve(process.cwd());
 const fail = (msg) => { console.error(`verify-pack: ${msg}`); process.exit(1); };
 
-// 0. build 产物必须存在
+// 0. 先强制 build（杜绝旧 lib 假通过）；再核产物存在
+execFileSync(NPM, ['run', 'build', '--', '--pretty', 'false'], { cwd: root, stdio: 'inherit' });
 for (const f of ['lib/index.js', 'lib/index.d.ts', 'lib/protocol.js', 'lib/client.js']) {
-  if (!existsSync(join(root, f))) fail(`缺 ${f}，先 npm run build`);
+  if (!existsSync(join(root, f))) fail(`缺 ${f}，build 疑似失败`);
 }
 
 // 1. npm pack --json
@@ -59,7 +60,10 @@ try {
     `if (!Array.isArray(inject)) throw new Error('bad inject');`,
     `if (typeof Config !== 'object' && typeof Config !== 'function') throw new Error('bad Config');`,
     `if (!protocol.normalizeEventData) throw new Error('bad protocol');`,
-    `console.log('consumer node import OK:', Object.keys(mod.default ?? {}).sort().join(','));`,
+    // 导出断言（§5 修复）：default 面板 name/inject 精确值（mod 即 default 绑定，不取 mod.default）
+    `if (JSON.stringify(inject) !== JSON.stringify(['agents', 'userQuestions', 'tools'])) throw new Error('inject 失配: ' + JSON.stringify(inject));`,
+    `if (mod.name !== 'wps-bot') throw new Error('default.name !== wps-bot: ' + String(mod.name));`,
+    `console.log('consumer node import OK:', name, JSON.stringify(inject));`,
   ].join('\n'));
 
   // 类型消费探测
