@@ -39,7 +39,7 @@ export type Route = "inject" | "enqueue" | "duplicate" | "drop";
 
 /** GA：requester/chat 作为本轮事实进模型；evidence 恒定供给（GA run_task 的 live-attachments 语用）。 */
 export function defaultFactify(ev: WpsEvent): string {
-  // A3-P0 防幻觉固定行：入群前历史对模型不可见——事实进模型，规则防编造
+  // 防幻觉固定行：上下文面见历史（story R2）——工具代替沉默（P-D 后）
   const head =
     `[WPS 任务 | chat ${ev.chatType || "group"}/${ev.chatId} | requester ${ev.senderName}(${ev.senderId})]` +
     "\n注意：你的直接上下文不含本对话的旧聊天（尤其你入群前的）；要翻历史就调 search_wps_history，不要编造。";
