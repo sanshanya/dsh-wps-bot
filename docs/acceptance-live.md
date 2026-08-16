@@ -9,6 +9,9 @@
 
 ## 前置事实（源码核验，非猜测）
 
+- **WS 单播律（04:11 真机事故实证）**：同一 SP 的每条事件**恰好投递一条连接**——多开监听（侧车/双服务/GA+本插件）= 各连接随机丢消息。04:10 实测：任务帧→宿主、答允帧→侧车，pending 吃不到答允、重发被误当答允拒掉。**生产部署 = 同时只许一条入站连接**；验收期间禁止挂侧车。
+
+
 - **ask 的唯一来源是沙盒升级**：`PreToolDecision{kind:'ask'}` 只由 pre-execute 监听器产生；组合无 hooks、gate-kubectl 关闭——通路 = 越界写先吃 deny → 模型按工具描述用 `sandbox_permissions`+justification 重试 → `approveEscalation` → `ctx.approval` → waterfall（tool-pwsh/src/index.ts:235）。模型多走一步是**预期动态**，不是失败。
 - **WS 群聊只推 @bot 消息**（README Roadmap 抓包结论③）：测试消息全部带 @甘小雨；附件须与 @ 同条。
 - persona 归组合；`[[attach:artifacts/*]]` 约定行已注入 persona（GA ga_runtime.py:111-114 同约定）。
