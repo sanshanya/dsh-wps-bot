@@ -433,8 +433,13 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
             }
           },
         });
+        logger.info("[wps-bot] 设置节已注册（ns=wps-bot）");
       })
-      .catch(() => { /* absent peer → noop */ });
+      .catch((error: unknown) => {
+        // absent peer → 组合墙内可接受的 noop；其余错误必须可见（静默吞错的实证代价：页面粉屏无尸检）。
+        if ((error as { code?: string })?.code === "ERR_MODULE_NOT_FOUND") return;
+        logger.warn("[wps-bot] 设置节挂载失败:", error);
+      });
   };
 
   let bootstrap: Promise<void> | undefined;
