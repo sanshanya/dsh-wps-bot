@@ -203,7 +203,18 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
 
   // f2#2/b2：不闭包捕获 handle——dispose 后旧句柄成尸；每次调用现读 chats 在册句柄
   function wrap(chatId: string): ChatSessionHandle {
-    const live = (): AgentHandleLike | undefined => chats.get(chatId)?.handle;
+    const live = (): AgentHandleLike | undefined => {
+      const handle = chats.get(chatId)?.handle;
+      if (handle === undefined) return undefined;
+      const sid = String(handle.agent?.session?.id ?? "");
+      if (sid.length > 0 && sid.startsWith("wps-bot:")) {
+        // ACP 纪律：投递前活体校验——registry 里的同名实例必须正是这具
+        const registered = (ctx.agents as unknown as { get?: (id: unknown) => unknown })
+          .get?.(sid.startsWith("wps-bot:") ? SessionId(sid) : sid);
+        if (registered !== undefined && registered !== handle.agent) return undefined;
+      }
+      return handle;
+    };
     const userMessage = (text: string) =>
       createUserMessage({ content: [{ type: "text", text }], source: { kind: "user" } });
     return {
@@ -466,6 +477,15 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
         /* 静默 */
       }
       await core?.shutdown().catch(() => undefined);
+      // ACP 纪律：父 agent dispose 前排干 continuable 子代理（服务缺席=组合无 subagents，跳过）
+      const subagents = (ctx as unknown as {
+        get?: (key: string) => unknown;
+      }).get?.("subagents") as { drainContinuableDescendants?: (agents: unknown[]) => Promise<unknown> } | undefined;
+      if (subagents?.drainContinuableDescendants !== undefined) {
+        await subagents
+          .drainContinuableDescendants([...chats.values()].map((entry) => entry.handle?.agent).filter(Boolean))
+          .catch(() => undefined);
+      }
       const disposals = [...chats.values()]
         .filter((entry) => entry.handle !== undefined)
         .map((entry) => (entry.handle as AgentHandleLike).dispose());

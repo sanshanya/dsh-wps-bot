@@ -80,13 +80,13 @@ Markdown 4500 分段（CRLF 归一/自然段/硬切 UTF-16 代理体守卫/首�
 
 | 波 | 内容 | 状态 |
 |---|---|---|
-| Phase 0 发布门禁 | lib 构建+exports/files+lockfile 重铸+`@types/node`+verify:pack；干净检出四门绿 | 未做（切片 1） |
-| Phase 0.5 投递探针 | 群内「只引用不@」WS 是否送达=**B 模型 go/no-go**；失败则 Phase 1 带 REST 补拉 | 未做（一条消息成本） |
-| P-A 纯增量 | finish_task（宽松默认）+reply+audit 三元组+D1 注册表模块（接路由前先有件） | 未做 |
-| P-B 通道代答 | user-questions 接通道（复用答允机器，模板分面） | 未做 |
-| P-C 分叉主体 | B 路由全键+C 审批模型+D3 workspace 迁移+G5 翻案+群问文案同步 | 未做（一次性切换；旧 `wps-bot:<chatId>` 持久线作废记档不迁移） |
+| Phase 0 发布门禁 | lib 构建+exports/files+lockfile 重铸+`@types/node`+verify:pack；干净检出四门绿 | ✅ b4d0509 |
+| Phase 0.5 投递探针 | 群内「只引用不@」WS 是否送达=**B 模型 go/no-go**；失败则 Phase 1 带 REST 补拉 | ⏳ 用户一条消息 |
+| P-A 纯增量 | finish_task（宽松默认）+reply+audit 三元组+D1 注册表模块 | ✅ c294126+6f…（工具对 registry 通道注册；P-C 时键迁移） |
+| P-B 通道代答 | user-questions 接通道（复用答允机器，模板分面） | ✅ 964db43 |
+| P-C 分叉主体 | B 路由全键+C 审批模型+D3 workspace 迁移+G5 翻案+群问文案同步 | 待 0.5 裁决后治行 |
 | P-D 历史面 | history 归档+search 工具+读审计 | 未做（P-C 后） |
-| 已合保留件 | 幂等/单播纪律/notify/seal/卡片共养/materialize/[[attach:]]/审批串行+settled/agent-status 接线/dispose 序/loader inject | ✅ |
+| 发版闸 | RELEASE 仪式文书 | ✅ a6bea45；U1/U2 用户域欠账目 |
 
 ## 运行与检查
 
