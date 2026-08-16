@@ -72,13 +72,13 @@ export interface WpsBotConfig {
 
 export const Config: Schema<WpsBotConfig> = Schema.object({
   clientId: Schema.string().default(""),
-  // role('secret')：settings.describe 永不下线其值（secrets 槽只报 set 与否），页面字段成 write-only。
-  clientSecret: Schema.string().role("secret").default(""),
+  // role('secret')：describe 永不下线其值，页面 write-only；不设默认——空串默认会把 presence(set)谎报成"已配置"（r8 裁决实证）。
+  clientSecret: Schema.string().role("secret"),
   spId: Schema.string().default(""),
   apiBase: Schema.string().default("https://openapi.wps.cn"),
   bridge: Schema.boolean().default(true),
-  // 运行期自举凭据（clientId/secret 换得），同样 write-only。
-  accessToken: Schema.string().role("secret").default(""),
+  // 运行期自举凭据（clientId/secret 换得），同样 write-only、无默认。
+  accessToken: Schema.string().role("secret"),
   provider: Schema.string().default("deepseek-official"),
   model: Schema.string().default("deepseek-v4-flash"),
   workspaceRoot: Schema.string().default(""),
@@ -437,14 +437,28 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
   let providerDisposer: (() => void) | undefined;
   let settingsWired = false;
   // 设置提交的统一反应：bridge 关→断连；开+凭据齐→拉起 bootstrap。
+  // P0 通道状态机（r8 裁决）：bridge off = 完整停机（清门闩——Promise 存在与否从来不是状态）；
+  // 再 on / 凭据补齐 = startBootstrap 全新拉起。
+  const teardownBridge = (): void => {
+    if (eventClient === undefined && core === null && bootstrap === undefined) return;
+    try { eventClient?.stop(); } catch { /* 静默 */ }
+    eventClient = undefined;
+    const victim = core;
+    core = null;
+    if (victim !== null) void victim.shutdown().catch(() => undefined);
+    bootstrap = undefined;
+    logger.info("[wps-bot] bridge 关闭（WS 断开，门闩已清——再开可重拉）");
+  };
   const onSettingsChange = (): void => {
     const live = cfgSource();
     const creds = credsOf(live);
     const credsOk = creds.clientId !== "" && creds.clientSecret !== "" && creds.spId !== "";
-    if (live.bridge === false && eventClient !== null && eventClient !== undefined) {
-      try { eventClient.stop(); } catch { /* 静默 */ }
-      logger.info("[wps-bot] bridge 关闭（WS 断开）");
-    } else if (live.bridge !== false && credsOk) {
+    const credsKey = `${creds.clientId}|${creds.clientSecret.length}|${creds.spId}`;
+    if (live.bridge === false || (bootstrap !== undefined && credsKey !== bootCredsKey)) {
+      // bridge 关或凭据换更：完整停机（后续凭据齐且开时立刻重拉）
+      teardownBridge();
+    }
+    if (cfgSource().bridge !== false && credsOk) {
       startBootstrap();
     }
   };
@@ -465,6 +479,7 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
     }
     void import("@deepseek-ai/dsh-settings")
       .then((m) => {
+        if (closed) return; // P2：import 在途卸载——不得在已释放 ctx 上注册
         const inst = (m as unknown as { installSettingsSection: (c: unknown, ns: string, schema: unknown, entry: WpsBotConfig, hooks: { setSource: (n: () => WpsBotConfig) => void; onChange: () => void }) => void }).installSettingsSection;
         inst(rawCtx as unknown, "wps-bot", Config as unknown, config, {
           setSource: (next: () => WpsBotConfig) => { cfgSource = next; },
@@ -480,6 +495,7 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
   };
 
   let bootstrap: Promise<void> | undefined;
+  let bootCredsKey = ""; // 运行通道的凭据指纹——settings 换更须重启（P0：保存即刻生效）
   const startBootstrap = (): void => {
     if (bootstrap !== undefined) return;
     bootstrap = (async () => {
@@ -490,6 +506,7 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
     if (closed) return;
     // 活凭据：页面后设的凭据必须在此刻现取（此前 creds0 是启动时空壳——bootstrap 永拿空串实证）。
     const liveCreds = credsOf(cfgSource());
+    bootCredsKey = `${liveCreds.clientId}|${liveCreds.clientSecret.length}|${liveCreds.spId}`;
     if (liveCreds.clientId === "" || liveCreds.clientSecret === "" || liveCreds.spId === "") {
       logger.warn("[wps-bot] bootstrap 中止：凭据仍缺——设置页补齐后经 onChange 重试");
       bootstrap = undefined;
@@ -577,7 +594,8 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
       logger.warn("[wps-bot] tools 服务未挂载——finish_task 缺位（组合层补挂）");
     }
 
-    if (closed) return;
+    // bridge 在 bootstrap 在途期被关：不得落工厂（teardown 已清门闩，此处落地即成尸）
+    if (closed || cfgSource().bridge === false) return;
     eventClient = factory({ appId: liveCreds.clientId, appSecret: liveCreds.clientSecret, dispatcher });
     // 观测锚点必须先行：open-event-sdk 1.0.1 的 start() 在连接存活期间不 resolve——
     // 放 await 后 = 永不打印，stop 时反补一条假信号（二度报告 §三.8 实证）。
@@ -589,6 +607,7 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
     })().then(undefined, (error: unknown) => {
       logger.error("[wps-bot] bootstrap failed:", error);
       console.error("[wps-bot] bootstrap failed:", error);
+      bootstrap = undefined; // P0：失败开门——settings 再触（bridge/creds 变更）可重试
     });
   };
 

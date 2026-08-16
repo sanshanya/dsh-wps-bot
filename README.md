@@ -44,7 +44,7 @@ export WPS365_SP_ID=...
 
 | 键 | 默认 | 含义 |
 | --- | --- | --- |
-| `clientId` / `clientSecret` / `spId` | 空 | WPS365 应用凭据；空了回落到环境变量并保持 fail-loud |
+| `clientId` / `clientSecret` / `spId` | 空 | WPS365 应用凭据；空不抛错——在 web 设置页「WPS Bot 配置」填写（settings 层优先），亦可回落 `WPS365_*` 环境变量；bridge 开+凭据齐即自动起连 |
 | `apiBase` | `https://openapi.wps.cn` | OpenAPI 合路 |
 | `provider` / `model` | deepseek-official / deepseek-v4-flash | Agent 模型面 |
 | `workspaceRoot` | 进程 cwd | 每 chat 的工作目录（每 chat 独立 session） |

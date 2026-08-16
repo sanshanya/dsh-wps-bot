@@ -90,11 +90,14 @@ if (!can) {
       return handle;
     }
     const installCalls: Array<{ ctx: unknown; ns: string; entry: unknown }> = [];
+    const settingsBox: { hooks?: { setSource: (t: () => unknown) => void; onChange: () => void } } = {};
     const ivi = {
       ctxTools: [] as unknown[],
       installCalls,
-      installStub: (c: unknown, ns: string, _schema: unknown, entry: unknown) => {
+      settingsBox,
+      installStub: (c: unknown, ns: string, _schema: unknown, entry: unknown, hooks?: { setSource: (t: () => unknown) => void; onChange: () => void }) => {
         installCalls.push({ ctx: c, ns, entry });
+        settingsBox.hooks = hooks;
       },
       idev,
       handlesBySession,
@@ -337,5 +340,44 @@ if (!can) {
     await waitFor(() => client.sends.some((s) => s.markdown === "操作已批准。"));
     await ivi.dispose();
   });
+
+test("P0 通道状态机：bridge off→stop+清闩，再 on→重拉（r8 裁决：Promise 存在与否不是状态）", async () => {
+  const ivi = makeHost();
+  const client = makeClient();
+  const pushey = makePushey();
+  let factories = 0; let stops = 0;
+  const countingFactory = (opts: { dispatcher: { handle(e: unknown): Promise<void> } }) => {
+    factories += 1;
+    (pushey.bag as { pusher: unknown }).pusher = (event: unknown) => opts.dispatcher.handle(event);
+    return { async start() {}, stop() { stops += 1; } };
+  };
+  apply(ivi.idev, baseConfig(), { client: client.fake, makeEventClient: countingFactory as never, installSettingsSection: ivi.installStub });
+  await new Promise((r) => setTimeout(r, 60));
+  assert.equal(factories, 1, "凭据齐+bridge on：首启");
+  assert.ok(ivi.settingsBox.hooks !== undefined, "设置节 hooks 在");
+
+  // 驱动 settings 面：setSource 给可控 holder，改 bridge=false + onChange
+  const holder: { cfg: Record<string, unknown> } = { cfg: { ...baseConfig() as unknown as Record<string, unknown> } };
+  ivi.settingsBox.hooks!.setSource(() => holder.cfg);
+  (holder.cfg as { bridge: boolean }).bridge = false;
+  ivi.settingsBox.hooks!.onChange();
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(stops, 1, "bridge off 必须 stop");
+  assert.equal(factories, 1);
+
+  // 再开：必须重拉（r8 裁决实证面——此前此处 factories 永停 1）
+  (holder.cfg as { bridge: boolean }).bridge = true;
+  ivi.settingsBox.hooks!.onChange();
+  await new Promise((r) => setTimeout(r, 60));
+  assert.equal(factories, 2, "bridge 再 on 必须重新拉起——门闩已清");
+
+  // 凭据变更（换新 clientId）→ 再起一路（配置页保存即刻生效承诺）
+  (holder.cfg as { clientId: string }).clientId = "cid-rotated";
+  ivi.settingsBox.hooks!.onChange();
+  await new Promise((r) => setTimeout(r, 60));
+  assert.equal(factories, 3, "凭据换更必须重启通道");
+
+  await ivi.dispose();
+});
 
 }

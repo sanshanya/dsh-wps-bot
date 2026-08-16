@@ -95,7 +95,10 @@ export class WpsBotController {
     groups: [],
   })
 
-  constructor(private readonly api: WpsBotRemoteApi) {}
+  private readonly api: WpsBotRemoteApi
+  constructor(api: WpsBotRemoteApi) {
+    this.api = api
+  }
 
   /** Latest load generation; older responses are never allowed to publish. */
   private generation = 0
@@ -159,7 +162,13 @@ export class WpsBotController {
     } catch (error) {
       if (!this.isCurrent(generation)) return
       if (error instanceof Error && error.name === 'AbortError') return
-      this.store.setSnapshot({ ...this.store.getSnapshot(), status: 'error', error: messageOf(error) })
+      const latest = this.store.getSnapshot()
+      // r8-#2：namespace 在手时后台刷新失败只留提示条——页面保活（bmp 同律）；首载失败才扳 error 面。
+      if (latest.namespace !== undefined) {
+        this.store.setSnapshot({ ...latest, status: 'ready', error: messageOf(error) })
+      } else {
+        this.store.setSnapshot({ ...latest, status: 'error', error: messageOf(error) })
+      }
     }
   }
 
@@ -176,6 +185,8 @@ export class WpsBotController {
       ops,
       expectedRevision: namespace.revision,
     }))
+    // r8-#1：发布新视图前作废一切在途旧读——否则旧 revision 回落，下一次 save 以陈旧 CAS 基线发出 → 假性 settings-conflict。
+    this.generation += 1
     this.store.setSnapshot({ ...this.store.getSnapshot(), namespace: next, error: null })
   }
 }

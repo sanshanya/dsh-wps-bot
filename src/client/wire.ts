@@ -36,14 +36,14 @@ export interface SettingsDescribeView {
 
 /** 带着 wire code 的业务失败——调用方按语义分支（如 settings-conflict）。 */
 export class HarnessRpcError extends Error {
-  constructor(
-    /** 关闭的上游错误码并集，绝非自由字符串。 */
-    readonly code: RpcError['code'],
-    message: string,
-    readonly details?: RpcError['details'],
-  ) {
+  /** 关闭的上游错误码并集，绝非自由字符串。 */
+  readonly code: RpcError['code']
+  readonly details?: RpcError['details']
+  constructor(code: RpcError['code'], message: string, details?: RpcError['details']) {
     super(message)
     this.name = 'HarnessRpcError'
+    this.code = code
+    this.details = details
   }
 }
 

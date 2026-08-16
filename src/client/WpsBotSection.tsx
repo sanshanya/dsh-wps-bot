@@ -276,6 +276,7 @@ export function WpsBotSection(props: WpsBotSectionProps): ReactElement {
         {modelGroup === undefined && <p className="wpsb-muted">{t('catalogEmpty')}</p>}
       </div>
 
+      {snapshot.error !== null && <div className="wpsb-error" role="alert">{snapshot.error}</div>}
       {saveError !== null && <div className="wpsb-error" role="alert">{saveError}</div>}
       <div className="wpsb-actions">
         {dirty && <span className="wpsb-staged">{t('staged')}</span>}

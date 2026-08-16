@@ -13,7 +13,7 @@
  *      + `tsc --noEmit probe.ts`（type 消费面必须 0 错）。
  */
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -89,4 +89,15 @@ try {
 } finally {
   rmSync(tmp, { recursive: true, force: true });
   rmSync(tarball, { force: true });
+}
+
+// ---- r8-#5/#4 发布面契约：browser bundle 真实存在 + 模块装载壳 + 无孤儿 sourcemap ----
+{
+  const paths = pkg.files.map((f) => f.path);
+  if (!paths.includes("lib/browser.js")) fail("verify-pack: 包面缺 lib/browser.js（./client 出口指向物）");
+  const head = readFileSync(join(root, "lib/browser.js"), "utf8").slice(0, 200);
+  if (!head.startsWith("window.__ModuleLoader__.load({")) fail("verify-pack: browser.js 缺 ModuleLoader 装载壳");
+  if (!head.includes('"dsh-wps-bot"')) fail("verify-pack: browser.js 模块 id 必须是包名");
+  const strayMaps = paths.filter((p) => /^lib\/.+\.map$/.test(p) && p !== "lib/browser.js.map");
+  if (strayMaps.length) fail(`verify-pack: 孤儿 sourcemap 入包（tsc sourceMap:false 永不产之——历史遗留）: ${strayMaps.join(",")}`);
 }
