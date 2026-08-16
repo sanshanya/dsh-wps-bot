@@ -19,6 +19,7 @@ import { appendApprovalAudit, autoAllowEntry, type ApprovalAuditEntry } from "./
 import { detailFor, InterruptionLedger, interruptionNotice, reasonForTurnEnd } from "./notify.ts";
 import { EvidenceStore } from "./evidence.ts";
 import { QuoteRegistry } from "./quote-registry.ts";
+import { parseTaskKey } from "./task-keys.ts";
 import type { EventDedup } from "./dedup.ts";
 import type { WpsEvent } from "./protocol.ts";
 import { WpsRouter, type ChatSessionHandle, type Route } from "./dispatch.ts";
@@ -80,7 +81,7 @@ export interface ApprovalRequestLike {
 export type ApprovalOutcome = "allowed-once" | "rejected" | "cancelled" | "unavailable";
 
 export type ReplyEvent =
-  | { kind: "reply"; text: string }
+  | { kind: "reply"; text: string; userId?: string }
   | { kind: "timeout" }
   | { kind: "cancelled" };
 
@@ -131,8 +132,20 @@ interface PendingQuestion {
   cancel: (error: Error) => void;
 }
 
+function withTriple(entry: import("./audit.ts").ApprovalAuditEntry, sessionId: string, owner: { userId: string } | undefined, requester: { userId: string }): void {
+  entry.sessionId = sessionId;
+  entry.ownerUserId = owner?.userId ?? requester.userId;
+  entry.requesterUserId = requester.userId;
+}
+function withFields(entry: import("./audit.ts").ApprovalAuditEntry, sessionId: string, owner: { userId: string } | undefined, requester: { userId: string }, approver: string): void {
+  withTriple(entry, sessionId, owner, requester);
+  entry.approverUserId = approver;
+}
+
 interface PendingApproval {
-  userId: string;
+  /** any-of 允集：owner∪participants；消费时 resolvedBy 记实人。 */
+  userIds: Set<string>;
+  resolvedBy?: string;
   resolve: (reply: ReplyEvent) => void;
   timer: NodeJS.Timeout;
   abortHook?: (() => void) | undefined;
@@ -207,10 +220,7 @@ export class WpsBotCore {
       // 改 buildCore：抱抱 chorine 整座 ensure 调用一个 p-cycle 的单飞避免并发创两次会话（报告 P0-4）
       ensure: (chatId) => this.singleFlightEnsure(chatId),
       // GA accepts_progress_reply：quote == 在途进度卡 id 且会话在跑
-      isProgressReply: (ev, busy) =>
-        busy &&
-        ev.quoteMsgId.length > 0 &&
-        this.cards.progressMessageId(ev.chatId) === ev.quoteMsgId,
+      quoteTaskOwner: (quoteMsgId) => this.cards.sessionIdOfMessage(quoteMsgId),
 
       ackIntervention: async (chatId, senderUserId, senderName) => {
         const mention = await this.client
@@ -222,16 +232,14 @@ export class WpsBotCore {
           mention ? [mention] : undefined,
         );
       },
-      onDispatched: (chatId, ev, route) => {
-        // G5：requester=「审批权归属」——只有真实派发新任务（enqueue）才改写；
-        // inject 是把补充塞进 A 的任务，B 不应因此获得审批窗（f3 安全回归）
+      onDispatched: (sessionId, ev, route) => {
+        // P-C：requester=最近触发路由者（audit 三元组的 requesterUserId 源）；
+        // 审批权归属走 owner+participants 集合（any-of），不回写 requester 权。
         if (route === "enqueue") {
-          this.sessions.setRequester(chatId, { userId: ev.senderId, name: ev.senderName });
+          this.sessions.setRequester(sessionId, { userId: ev.senderId, name: ev.senderName });
         }
-        // GA 一卡共养：同 chat 已有活卡就不起步（跨排程任务续更同一张卡；
-        // 仅当 finalizeTurn 在空闲收官回完上张卡后才设新一轮的起始点）
-        if (this.cards.hasActive(chatId)) return;
-        this.cards.start(chatId);
+        if (this.cards.hasActive(sessionId)) return;
+        this.cards.start(sessionId, ev.chatId);
       },
       logger: { warn: (...args: unknown[]) => this.logger.warn(...args) },
     });
@@ -243,10 +251,13 @@ export class WpsBotCore {
    */
   async handleIncomingEvent(ev: WpsEvent): Promise<Route | "approval-reply" | "duplicate"> {
     if (!this.router.claimLock(ev.eventId)) return "duplicate"; // 幂等均垫
-    const pend = this.pendings.get(ev.chatId);
-    if (pend !== undefined && ev.senderId === pend.userId) {
+    // 审批答允（any-of）：pending 允集(owner∪participants)含发送者且同 chat → 原子消费
+    const sameChat = (sessionId: string) => (parseTaskKey(sessionId)?.chatId ?? sessionId) === ev.chatId;
+    for (const [sessionId, pend] of this.pendings) {
+      if (!sameChat(sessionId) || !pend.userIds.has(ev.senderId)) continue;
+      pend.resolvedBy = ev.senderId;
       try {
-        pend.resolve({ kind: "reply", text: ev.text.trim() });
+        pend.resolve({ kind: "reply", text: ev.text.trim(), userId: ev.senderId });
         await this.router.recordAcceptance(ev.eventId);
         return "approval-reply";
       } catch (error) {
@@ -254,9 +265,9 @@ export class WpsBotCore {
         throw error;
       }
     }
-    // user-questions 答允面（R6/P-B）：quote 命中在期问题 → 消费作答，不进任务路由
-    const question = this.pendingQuestions.get(ev.chatId);
-    if (question !== undefined && ev.senderId === question.userId && question.messageIds.includes(ev.quoteMsgId)) {
+    // user-questions 答允面：quote 命中在期问题 → 消费作答，不进任务路由
+    for (const [sessionId, question] of this.pendingQuestions) {
+      if (!sameChat(sessionId) || question.userId !== ev.senderId || !question.messageIds.includes(ev.quoteMsgId)) continue;
       try {
         question.resolve(ev.text.trim());
         await this.router.recordAcceptance(ev.eventId);
@@ -311,8 +322,11 @@ export class WpsBotCore {
   private async materializeAttachments(ev: WpsEvent): Promise<void> {
     const withKey = ev.attachments.filter((a) => a.storageKey);
     if (withKey.length === 0) return;
+    // P-C：task 写作隔离 —— downloads 落在目标任务工作区；会话未建时回根任务键
+    const taskKey = this.router.previewTarget(ev) ?? `wps-bot:${ev.chatId}:${ev.senderId}:${ev.eventId}`;
+    const keyParts = taskKey.split(":");
     const digest = createHash("sha256").update(ev.eventId, "utf8").digest("hex").slice(0, 12);
-    const dir = join(this.cfg.workspaceRoot, "downloads", digest);
+    const dir = join(this.cfg.workspaceRoot, keyParts[1] ?? ev.chatId, keyParts[2] ?? ev.senderId, keyParts[3] ?? ev.eventId, "downloads", digest);
     await mkdir(dir, { recursive: true });
     let index = 0;
     for (const attachment of withKey) {
@@ -369,7 +383,8 @@ export class WpsBotCore {
   }): Promise<{ answers: Array<{ id: string; selected: string[]; custom?: string }> }> {
     const agentLike = request.agent as { session?: { id?: unknown } } | undefined;
     const sessionId = String(agentLike?.session?.id ?? "");
-    const chatId = sessionId.startsWith("wps-bot:") ? sessionId.slice("wps-bot:".length) : this.chatForAgentFn(request.agent);
+    const parsedKey = parseTaskKey(sessionId);
+    const chatId = parsedKey !== null ? parsedKey.chatId : this.chatForAgentFn(request.agent);
     if (chatId === null) {
       const e = new Error("wps-bot: 无从落聊的租答请求");
       (e as { code?: string }).code = "NO_CHAT_BINDING";
@@ -454,26 +469,34 @@ export class WpsBotCore {
   ): Promise<ApprovalOutcome> {
     if (this.cfg.approvalMode === "disabled") return next();
     if (req.signal?.aborted) return "cancelled";
-    const chatId = this.chatForAgentFn(req.agent);
-    if (chatId === null) return next();
-    const requester = this.sessions.getRequester(chatId);
+    const sessionId = this.chatForAgentFn(req.agent);
+    if (sessionId === null) return next();
+    const chatId = parseTaskKey(sessionId)?.chatId ?? sessionId;
+    const owner = this.router.getOwner(sessionId);
+    const requester = this.sessions.getRequester(sessionId);
     if (requester === undefined) return next();
+    const task = this.router.getTask(sessionId);
+    const allowed = new Set<string>([
+      ...(owner !== undefined ? [owner.userId] : []),
+      ...(task?.participants ?? []).map((p) => p.userId),
+    ]);
+    if (allowed.size === 0) allowed.add(requester.userId);
 
     const allowWindow = this.cfg.allowWindow && allowsWindowForReason(req.reason);
-    if (windowAllows(this.windows, chatId, requester.userId, allowWindow)) {
+    if ([...allowed].some((u) => windowAllows(this.windows, sessionId, u, allowWindow))) {
       try {
-        await appendApprovalAudit(
-          this.cfg.auditPath,
-          autoAllowEntry({
-            chatId,
-            userId: requester.userId,
-            review: req.reason,
-            reason: req.reason,
-            toolName: req.toolName,
-            callId: req.callId,
-            windowExpiresAt: this.windows.expiresAt(chatId, requester.userId) ?? undefined,
-          }),
-        );
+        const hitUser = [...allowed].find((u) => windowAllows(this.windows, sessionId, u, allowWindow)) ?? requester.userId;
+        const entry = autoAllowEntry({
+          chatId,
+          userId: hitUser,
+          review: req.reason,
+          reason: req.reason,
+          toolName: req.toolName,
+          callId: req.callId,
+          windowExpiresAt: this.windows.expiresAt(sessionId, hitUser) ?? undefined,
+        });
+        withTriple(entry, sessionId, owner, requester);
+        await appendApprovalAudit(this.cfg.auditPath, entry);
         return "allowed-once";
       } catch {
         // 审计失败=fail-closed：显式 unavailable 而不是 next()（另一宽 answerer 在同组合时会抢答）
@@ -481,38 +504,39 @@ export class WpsBotCore {
       }
     }
 
-    const mention = await this.client
-      .resolveMention(requester.userId, requester.name)
-      .catch(() => null);
+    // 群问 @：owner + requester（同人只 @一次）；mentions 面尽力
+    const mentionTargets = [
+      owner !== undefined ? owner : requester,
+      ...(owner === undefined || owner.userId === requester.userId ? [] : [requester]),
+    ];
+    const mentions = await Promise.all(
+      mentionTargets.map((t) => this.client.resolveMention(t.userId, t.name).catch(() => null)),
+    ).then((list) => list.filter((m) => m !== null));
     const reason = String(req.reason ?? "");
     try {
       await this.client.sendMarkdownSplit(
         chatId,
         approvalQuestion(reason, allowWindow),
-        mention,
+        mentions.length > 0 ? (mentions as never) : null,
         this.cfg.deliverChunks,
       );
     } catch (error) {
       this.logger.warn("[wps-bot] approval question send failed:", error);
       return next();
     }
-    void this.cards.phase(chatId, { phase: "等待人工审批" });
+    void this.cards.phase(sessionId, { phase: "等待人工审批" });
 
-    const reply = await this.waitReply(chatId, requester.userId, req.signal);
-    const decision = decideApproval(reply, allowWindow, chatId, requester.userId, reason, this.windows);
+    const reply = await this.waitReplyFor(sessionId, allowed, req.signal);
+    const decisionUserId = reply.kind === "reply" ? reply.userId ?? requester.userId : requester.userId;
+    const decision = decideApproval(reply, allowWindow, chatId, decisionUserId, reason, this.windows, sessionId);
     if (reply.kind === "reply") {
-      // audit 三元组（现行单 requester：三者同形；P-C 多参与者时分叉到各自真实值）
-      decision.audit.ownerUserId = requester.userId;
-      decision.audit.requesterUserId = requester.userId;
-      decision.audit.approverUserId = requester.userId;
+      withFields(decision.audit, sessionId, owner, requester, decisionUserId);
     }
     await appendApprovalAudit(this.cfg.auditPath, decision.audit).catch((error: unknown) => {
       this.logger.warn("[wps-bot] audit append failed:", error);
     });
     if (decision.ackText) {
-      await this.client
-        .sendMarkdown(chatId, decision.ackText, mention ? [mention] : undefined)
-        .catch(() => undefined);
+      await this.client.sendMarkdown(chatId, decision.ackText, mentions.length > 0 ? (mentions as never) : undefined).catch(() => undefined);
     }
     return decision.outcome;
   }
@@ -678,7 +702,12 @@ export class WpsBotCore {
     this.router.seal();
     const deadlineMs = this.cfg.shutdownDeadlineMs ?? 10_000;
     const work = (async () => {
-      for (const chatId of this.router.chatIdsWithWork()) {
+      const notifChatIds = new Set<string>();
+      for (const sessionId of this.router.sessionIdsWithWork()) {
+        const parts = sessionId.split(":");
+        const chatId = parts[1] ?? sessionId;
+        if (notifChatIds.has(chatId)) continue;
+        notifChatIds.add(chatId);
         await this.notifyInterrupted(chatId, "service_stopping");
       }
       for (const chatId of [...this.pendings.keys()]) {
@@ -729,9 +758,13 @@ export class WpsBotCore {
     pend.resolve({ kind: "cancelled" });
   }
 
+  private waitReplyFor(sessionId: string, userIds: Set<string>, signal?: { aborted: boolean; addEventListener?: (evt: string, cb: () => void) => void }): Promise<ReplyEvent> {
+    return this.waitReply(sessionId, userIds, signal);
+  }
+
   private waitReply(
     chatId: string,
-    userId: string,
+    userIds: Set<string>,
     signal?: { aborted: boolean; addEventListener?: (evt: string, cb: () => void) => void },
   ): Promise<ReplyEvent> {
     return new Promise((resolve) => {
@@ -740,7 +773,7 @@ export class WpsBotCore {
         if (this.pendings.get(chatId) === entry) this.pendings.delete(chatId);
       };
       const entry: PendingApproval = {
-        userId,
+        userIds,
         resolve: (reply) => {
           if ((entry as { settled?: boolean }).settled === true) return; // 迟来答允不得双答（audit/ack 单发）
           (entry as { settled?: boolean }).settled = true;
@@ -797,6 +830,8 @@ function decideApproval(
   userId: string,
   reason: string,
   windows: ApprovalWindowStore,
+  /** 窗键面=(sessionId,user)（契约 C4）；audit.chatId 保真 chat。 */
+  sessionKey?: string,
 ): { outcome: ApprovalOutcome; ackText: string | null; audit: ApprovalAuditEntry } {
   const timestamp = Math.floor(Date.now() / 1000);
   if (reply.kind === "cancelled") {
@@ -847,7 +882,7 @@ function decideApproval(
     };
   }
   if (minutes > 0 && allowWindow) {
-    const windowExpiresAt = windows.grant(chatId, userId, minutes);
+    const windowExpiresAt = windows.grant(sessionKey ?? chatId, userId, minutes);
     return {
       outcome: "allowed-once",
       ackText: ackApprovedWindow(minutes),

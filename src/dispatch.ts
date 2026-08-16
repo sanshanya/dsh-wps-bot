@@ -24,8 +24,8 @@ export interface RouterOptions {
   /** 定制度事实包装；默认 defaultFactify。 */
   /** 事件被真正派发（followup/inject 落地）时通知宿主（requester 追踪/卡片启动）。 */
   onDispatched?: (chatId: string, ev: WpsEvent, route: Exclude<Route, "duplicate" | "drop">) => void;
-  /** GA accepts_progress_reply：quote 命中在途进度卡 message id（busy 时才成立）。 */
-  isProgressReply?: (ev: WpsEvent, busy: boolean) => boolean;
+  /** 在途进度卡 message id → 所属 sessionId（GA accepts_progress_reply 的宿主面；P-C 后注册表为主路）。 */
+  quoteTaskOwner?: (quoteMsgId: string) => string | null;
   logger?: { warn(...args: unknown[]): void };
 }
 
@@ -55,9 +55,21 @@ export function defaultFactify(ev: WpsEvent): string {
   return `${head}\n\n${summary || "（无文本）"}`;
 }
 
+export interface TaskState {
+  /** 任务会话键：`wps-bot:<chatId>:<ownerId>:<taskId>`（task-keys.ts）。 */
+  sessionId: string;
+  chatId: string;
+  ownerId: string;
+  ownerName: string;
+  participants: Array<{ userId: string; name: string }>;
+  /** ensure 在途旗：findOwnRunning 的活判据之一。 */
+  ensuring?: boolean;
+  handle?: ChatSessionHandle;
+}
+
 export class WpsRouter {
   private readonly opts: RouterOptions;
-  private readonly handles = new Map<string, ChatSessionHandle>();
+  private readonly tasks = new Map<string, TaskState>();
   private readonly queues = new Map<string, WpsEvent[]>();
 
   constructor(opts: RouterOptions) {
@@ -84,55 +96,146 @@ export class WpsRouter {
     }
   }
 
-  private async route(ev: WpsEvent): Promise<Route> {
-    const handle = this.handles.get(ev.chatId);
-    const busy = handle?.status() === "running";
-    // GA：direct = isPrivate || mentioned || (quote == 在途进度卡 message id 且会话在跑)
-    const progressReply = this.opts.isProgressReply?.(ev, busy) ?? false;
-    const direct = ev.isPrivate || ev.mentioned || progressReply;
-    const evidence = ev.evidenceBearing;
-
-    if (handle && direct && busy && !evidence) {
-      // GA：运行中收到明确引用/私聊/@ → 复用原生 intervention seam 补充当前用户事实
-      if (handle.inject(defaultFactify(ev))) {
-        // ack 失败不阻止 accepted：inject 已成功，重发只会重复注入
-        await this.opts.ackIntervention?.(ev.chatId, ev.senderId, ev.senderName).catch(() => undefined);
-        this.opts.onDispatched?.(ev.chatId, ev, "inject");
-        return "inject";
-      }
-      return this.enqueue(ev);
+  /** P-C 路由（GA app.py:206-232 优先级对位+用户定稿裁决）：pending 外侧已消费；此处：
+   *  1. quote 命中注册表/在册任务 → 目标任务（inject 或落队）
+   *  2. 未 direct（群非@且未命中）→ drop
+   *  3. 本人 running 任务 → inject（无证据）或落队
+   *  4. 否则 → 新任务（taskId=根消息 eventId，owner=sender）
+   */
+  /** 路由前嗅探：返回 intend 的 sessionId（不落队）——materialize 需目标任务盘。 */
+  previewTarget(ev: WpsEvent): string | null {
+    if (ev.quoteMsgId.length > 0) {
+      const inherited = this.lookupQuote(ev.quoteMsgId);
+      if (inherited !== null) return inherited.sessionId;
+      const cardOwner = this.opts.quoteTaskOwner?.(ev.quoteMsgId);
+      const cardTask = cardOwner !== undefined && cardOwner !== null ? (this.tasks.get(cardOwner)?.handle?.status() === "running" ? this.tasks.get(cardOwner) : undefined) : undefined;
+      if (cardTask !== undefined && cardTask !== null) return cardTask.sessionId;
     }
-    // 未 @、非私聊、未引用进行中任务的群消息 → 丢弃，不进模型
-    if (!direct) return "drop";
-    return this.enqueue(ev);
+    if (!ev.isPrivate && !ev.mentioned) return null;
+    const own = this.findOwnRunning(ev.chatId, ev.senderId);
+    if (own !== null) return own.sessionId;
+    return `wps-bot:${ev.chatId}:${ev.senderId}:${ev.eventId}`;
   }
 
-  /** 同 chat FIFO 落队 + 空闲立刻派发。 */
-  private async enqueue(ev: WpsEvent): Promise<"enqueue"> {
-    const queue = this.queues.get(ev.chatId) ?? [];
+  private async route(ev: WpsEvent): Promise<Route> {
+    // 1) quote 继承
+    if (ev.quoteMsgId.length > 0) {
+      const inherited = this.lookupQuote(ev.quoteMsgId);
+      if (inherited !== null) {
+        if (inherited.ownerId !== ev.senderId && !inherited.participants.some((p) => p.userId === ev.senderId)) {
+          inherited.participants.push({ userId: ev.senderId, name: ev.senderName });
+        }
+        return this.dispatchToTask(inherited, ev);
+      }
+      // in-flight 进度卡 quote 的 GA 特殊面：命中在跑任务时按 inject 走
+      const cardOwner = this.opts.quoteTaskOwner?.(ev.quoteMsgId);
+      if (cardOwner !== undefined && cardOwner !== null && this.tasks.get(cardOwner)?.handle?.status() === "running") {
+        const task = this.tasks.get(cardOwner);
+        if (task !== undefined) return this.dispatchToTask(task, ev);
+      }
+    }
+    const direct = ev.isPrivate || ev.mentioned;
+    if (!direct) return "drop";
+
+    // 2) 本人 running 任务（同 chat 最新一个）
+    const own = this.findOwnRunning(ev.chatId, ev.senderId);
+    if (own !== null && !ev.evidenceBearing) {
+      return this.dispatchToTask(own, ev);
+    }
+    if (own !== null) return this.enqueueTo(own, ev);
+
+    // 3) 新任务
+    const fresh = this.createTask(ev.chatId, ev.senderId, ev.senderName, ev.eventId);
+    return this.enqueueTo(fresh, ev);
+  }
+
+  private lookupQuote(quoteMsgId: string): TaskState | null {
+    for (const [, task] of this.tasks) {
+      if (task.handle && this.ownedOutIds(task.sessionId)?.has(quoteMsgId)) return task;
+    }
+    return null;
+  }
+
+  private ownedOutIds(_sessionId: string): Set<string> | null {
+    return this.outboundIds.get(_sessionId) ?? null;
+  }
+  private readonly outboundIds = new Map<string, Set<string>>();
+  registerOutbound(sessionId: string, ids: string[]): void {
+    if (ids.length === 0) return;
+    let set = this.outboundIds.get(sessionId);
+    if (set === undefined) { set = new Set(); this.outboundIds.set(sessionId, set); }
+    for (const id of ids) set.add(id);
+  }
+
+  /** 同 owner 的活任务：在跑或队列非空（连续消息同任务——P0-4/P-C 用户定稿「连续@→当前任务下一轮」）。 */
+  findOwnRunning(chatId: string, ownerId: string): TaskState | null {
+    let found: TaskState | null = null;
+    for (const [sessionId, task] of this.tasks) {
+      if (task.chatId !== chatId || task.ownerId !== ownerId) continue;
+      if (task.ensuring === true || task.handle?.status() === "running" || (this.queues.get(sessionId)?.length ?? 0) > 0) found = task;
+    }
+    return found;
+  }
+
+  createTask(chatId: string, ownerId: string, ownerName: string, taskId: string): TaskState {
+    const sessionId = `wps-bot:${chatId}:${ownerId}:${taskId}`;
+    let state = this.tasks.get(sessionId);
+    if (state === undefined) {
+      state = { sessionId, chatId, ownerId, ownerName, participants: [] };
+      this.tasks.set(sessionId, state);
+    }
+    return state;
+  }
+
+  getTask(sessionId: string): TaskState | undefined {
+    return this.tasks.get(sessionId);
+  }
+  getOwner(sessionId: string): { userId: string; name: string } | undefined {
+    const task = this.tasks.get(sessionId);
+    return task === undefined ? undefined : { userId: task.ownerId, name: task.ownerName };
+  }
+
+  private dispatchToTask(task: TaskState, ev: WpsEvent): Promise<Route> {
+    const handle = task.handle;
+    if (handle?.status() === "running" && !ev.evidenceBearing) {
+      if (handle.inject(defaultFactify(ev))) {
+        void this.opts.ackIntervention?.(task.chatId, ev.senderId, ev.senderName).catch(() => undefined);
+        this.opts.onDispatched?.(task.sessionId, ev, "inject");
+        return Promise.resolve("inject" as Route);
+      }
+    }
+    return this.enqueueTo(task, ev);
+  }
+
+  private async enqueueTo(task: TaskState, ev: WpsEvent): Promise<Route> {
+    const queue = this.queues.get(task.sessionId) ?? [];
     queue.push(ev);
-    this.queues.set(ev.chatId, queue);
-    await this.drain(ev.chatId);
+    this.queues.set(task.sessionId, queue);
+    await this.drain(task.sessionId);
     return "enqueue";
   }
 
-  /** 同 chat 串行：仅在会话空闲时吐出队首一条。会话空闲事件由宿主调用本方法。
-   *  @returns true = 本逼交涉成功出队并投递（finalizeTurn 靠它决定是否算作「还有活任务」）
-   */
-  async drain(chatId: string): Promise<boolean> {
-    const handle = this.handles.get(chatId);
+  async drain(sessionId: string): Promise<boolean> {
+    const task = this.tasks.get(sessionId);
+    const handle = task?.handle;
     if (handle && handle.status() === "running") return false;
-    const queue = this.queues.get(chatId);
+    const queue = this.queues.get(sessionId);
     if (!queue || queue.length === 0) return false;
     const next = queue.shift();
-    if (next === undefined) return false;
+    if (next === undefined || task === undefined) return false;
     let target = handle;
     if (target === undefined) {
-      target = await this.opts.ensure(chatId);
-      this.handles.set(chatId, target);
+      // P0-4/P-C：ensure 在途也算活任务（并发第二条不再另建会话）
+      task.ensuring = true;
+      try {
+        target = await this.opts.ensure(sessionId);
+        task.handle = target;
+      } finally {
+        task.ensuring = false;
+      }
     }
     try {
-      this.opts.onDispatched?.(chatId, next, "enqueue");
+      this.opts.onDispatched?.(sessionId, next, "enqueue");
       await target.followup(defaultFactify(next));
       return true;
     } catch (error) {
@@ -142,25 +245,22 @@ export class WpsRouter {
     }
   }
 
-  /** G4：shutdown 通知枚举面——队列非空或会话在跑的在册 chat。 */
-  chatIdsWithWork(): string[] {
+  /** G4：shutdown 通知枚举面——队列非空或会话在跑的在册 sessionId。 */
+  sessionIdsWithWork(): string[] {
     const out: string[] = [];
-    for (const [chatId] of this.handles) {
-      if (this.busy(chatId) || (this.queues.get(chatId)?.length ?? 0) > 0) out.push(chatId);
-    }
-    for (const [chatId, queue] of this.queues) {
-      if (queue.length > 0 && !out.includes(chatId)) out.push(chatId);
+    for (const [sessionId, task] of this.tasks) {
+      if (task.handle?.status() === "running" || (this.queues.get(sessionId)?.length ?? 0) > 0) out.push(sessionId);
     }
     return out;
   }
 
   /** 会话内是否还有待办（卡片/审批计时器等效观察）。 */
-  queued(chatId: string): number {
-    return this.queues.get(chatId)?.length ?? 0;
+  queued(sessionId: string): number {
+    return this.queues.get(sessionId)?.length ?? 0;
   }
 
-  entries(): IterableIterator<[string, ChatSessionHandle]> {
-    return this.handles.entries();
+  entries(): IterableIterator<[string, TaskState]> {
+    return this.tasks.entries();
   }
 
   private sealed = false;
@@ -185,13 +285,14 @@ export class WpsRouter {
     this.opts.dedup.release(eventId);
   }
 
-  /** 会话句柄报告忙闲（GA: session.is_running()）——宿主有线双向取：优先 handle.status，另去忙阅眼项。 */
-  busy(chatId: string): boolean {
-    return this.handles.get(chatId)?.status() === "running";
+  /** 会话句柄报告忙闲（GA: session.is_running()）。 */
+  busy(sessionId: string): boolean {
+    return this.tasks.get(sessionId)?.handle?.status() === "running";
   }
 
-  /** 宿主会话报错/中止的路径：把手柄从在册清出（下次 direct 重建）。 */
-  forget(chatId: string): void {
-    this.handles.delete(chatId);
+  /** 宿主会话报错/中止的路径：把手柄从在册清出。 */
+  forget(sessionId: string): void {
+    this.tasks.delete(sessionId);
+    this.outboundIds.delete(sessionId);
   }
 }

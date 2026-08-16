@@ -221,7 +221,8 @@ if (!can) {
     // 1) 真 SDK dispatcher 帧 → direct → followup → 会话在跑
     await pushey.bag.pusher!(frameBotMessage("p2p"));
     await waitFor(() => [...ivi.handlesBySession.keys()].length === 1);
-    const s1 = ivi.sessions("wps-bot:chat-42")!;
+    const k1 = [...ivi.handlesBySession.keys()][0]!;
+    const s1 = ivi.sessions(k1)!;
     assert.ok(s1.record.followups[0]!.includes("第一份出栈答数"));
     assert.ok(s1.running.running);
     assert.equal((ivi.listeners.get("session/event") ?? []).length, 1);
@@ -283,7 +284,7 @@ if (!can) {
       next: () => Promise<string>,
     ) => Promise<string>;
     const req = {
-      agent: (ivi.sessions("wps-bot:chat-42")!.handle as { agent: unknown }).agent,
+      agent: (ivi.sessions([...ivi.handlesBySession.keys()][0]!)!.handle as { agent: unknown }).agent,
       toolName: "pwsh",
       reason: "测试操作",
       signal: { aborted: false },

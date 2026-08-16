@@ -66,10 +66,10 @@ test("ProgressCards：initialDelay 内完结 → 零交互（GA 短任务不发�
     settle: "recall",
     mode: "card",
   });
-  cards.start("c1");
-  cards.phase("c1", { turn: 1 });
+  cards.start("wps-bot:c1:u1:t1", "c1");
+  cards.phase("wps-bot:c1:u1:t1", { turn: 1 });
   await new Promise((r) => setTimeout(r, 20));
-  await cards.finish("c1");
+  await cards.finish("wps-bot:c1:u1:t1");
   assert.equal(log.sendCard.length, 0);
   assert.equal(log.recall.length, 0);
 });
@@ -85,14 +85,14 @@ test("ProgressCards：超时后才发卡 + 完结 recall", async () => {
     settle: "recall",
     mode: "card",
   });
-  cards.start("c2");
-  cards.phase("c2", { turn: 2 });
+  cards.start("wps-bot:c2:u1:t1", "c2");
+  cards.phase("wps-bot:c2:u1:t1", { turn: 2 });
   await new Promise((r) => setTimeout(r, 40));
   assert.equal(log.sendCard.length, 1);
-  cards.phase("c2", { turn: 3 });
+  cards.phase("wps-bot:c2:u1:t1", { turn: 3 });
   await new Promise((r) => setTimeout(r, 10));
   assert.equal(log.updateCard.length, 1);
-  await cards.finish("c2");
+  await cards.finish("wps-bot:c2:u1:t1");
   assert.equal(log.recall.length, 1);
 });
 
@@ -103,10 +103,10 @@ test("ProgressCards：mode=off 完全静默", async () => {
     title: "甘小雨",
     mode: "off",
   });
-  cards.start("c3");
-  cards.phase("c3", { turn: 1 });
+  cards.start("wps-bot:c3:u1:t1", "c3");
+  cards.phase("wps-bot:c3:u1:t1", { turn: 1 });
   await new Promise((r) => setTimeout(r, 30));
-  await cards.finish("c3");
+  await cards.finish("wps-bot:c3:u1:t1");
   assert.equal(log.sendCard.length, 0);
 });
 
@@ -118,9 +118,9 @@ test("B4-a：recall 失败 → 代为 update「任务已完成…撤回失败」
     async recallMessage() { calls.push({ kind: "recall" }); throw new Error("recall expired"); },
   };
   const cards = new ProgressCards({ client: fake, mode: "card", settle: "recall", title: "甘小雨", initialDelayMs: 1, heartbeatMs: 60000 });
-  cards.start("c1");
+  cards.start("wps-bot:c1:u1:t1", "c1");
   await new Promise((r) => setTimeout(r, 20));
-  await cards.finish("c1", { delivered: true });
+  await cards.finish("wps-bot:c1:u1:t1", { delivered: true });
   assert.ok(calls.some((c) => c.kind === "recall"));
   assert.ok(calls.some((c) => c.kind === "update" && c.text!.includes("任务已完成") && c.text!.includes("撤回失败")));
 });
@@ -133,9 +133,9 @@ test("B4-b：未交付完结 → 失败文案 update 且无 recall（progress.py
     async recallMessage() { calls.push({ kind: "recall" }); return {}; },
   };
   const cards = new ProgressCards({ client: fake, mode: "card", settle: "recall", title: "甘小雨", initialDelayMs: 1, heartbeatMs: 60000 });
-  cards.start("c1");
+  cards.start("wps-bot:c1:u1:t1", "c1");
   await new Promise((r) => setTimeout(r, 20));
-  await cards.finish("c1", { delivered: false, failure: "处理期间发生运行时异常。" });
+  await cards.finish("wps-bot:c1:u1:t1", { delivered: false, failure: "处理期间发生运行时异常。" });
   assert.equal(calls.filter((c) => c.kind === "recall").length, 0);
   assert.ok(calls.some((c) => c.kind === "update" && c.text!.includes("处理期间发生运行时异常")));
 });

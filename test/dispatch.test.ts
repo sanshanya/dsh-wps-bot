@@ -73,7 +73,8 @@ test("分诊矩阵：私聊消息进队；未运行 + 无会话 → ensure 建�
     },
   });
   assert.equal(await router.handleEvent(ev({ isPrivate: true, chatType: "p2p" })), "enqueue");
-  assert.deepEqual(ensured, ["c1"]);
+  assert.equal(ensured.length, 1);
+  assert.equal(router.getTask(ensured[0]!)?.chatId, "c1");
   assert.equal(handle.followupLog.length, 1);
   assert.ok(handle.followupLog[0]!.includes("requester 张三(u1)"));
 });
@@ -119,7 +120,9 @@ test("分诊矩阵：运行中但带附件 → 不走 inject，落队；idle 后
   assert.equal(handle.injectLog.length, 0);
   assert.equal(handle.followupLog.length, 1); // 只有 a1 的投递（t1）
   handle.running = false;
-  await router.drain("c1");
+  const taskIds = [...router.entries()].map(([k]) => k);
+  assert.equal(taskIds.length, 1);
+  await router.drain(taskIds[0]!);
   assert.equal(handle.followupLog.length, 2);
   assert.ok(handle.followupLog[1]!.includes("附件"));
 });
@@ -136,23 +139,35 @@ test("分诊矩阵：dedup 同 event_id 再投递 → duplicate；release 后允
   assert.equal(await router.handleEvent(ev({ eventId: "m10", isPrivate: true })), "enqueue");
 });
 
-test("分诊矩阵：GA quote 语义——只对在途进度卡的 quote 才算 direct；派发的历史 id 不算", async () => {
+test("分诊矩阵：P-C quote 语义——注册表/卡钩命中目标任务 → 继承注入；裸历史 id 不算", async () => {
   const d = new EventDedup({ limit: 128 });
   const handle = fakeHandle();
-  // 假进度卡 id "card-1"；GA busy 时才命中
-  const isProgressReply = (e: WpsEvent, busy: boolean) => busy && e.quoteMsgId === "card-1";
-  const router = new WpsRouter({ dedup: d, ensure: async () => handle, isProgressReply });
+  const router = new WpsRouter({ dedup: d, ensure: async () => handle });
   await router.handleEvent(ev({ eventId: "b1", isPrivate: true, text: "borne" }));
-  // quote 任务本体 eventId 的老消息（被派发过）→ 不算 direct（GA 唯一 quote 源是进度卡）
+  // 任务键从任务表取
+  const taskKey = [...router.entries()].map(([k]) => k)[0]!;
+
+  // 未引用的群非@（且无注册表命中）→ drop
   assert.equal(await router.handleEvent(ev({ eventId: "b2", quoteMsgId: "b1" })), "drop");
-  // quote 在途进度卡且会话在跑 → direct → 走 inject
+
+  // 注册表记账：quote→task 交绑（setland 注册表消费的宿主输入面）→ 另一用户引用进场
+  router.registerOutbound(taskKey, ["o-1"]);
   handle.running = true;
-  assert.equal(await router.handleEvent(ev({ eventId: "b3", quoteMsgId: "card-1" })), "inject");
-  assert.equal(handle.injectLog.length, 1);
-  assert.equal(handle.followupLog.length, 1);
-  // 会话空闲后 quote 同一张卡，不算 direct（GA accepts_progress_reply 要求 is_running）
-  handle.running = false;
-  assert.equal(await router.handleEvent(ev({ eventId: "b4", quoteMsgId: "card-1" })), "drop");
+  assert.equal(await router.handleEvent(ev({ eventId: "b3", quoteMsgId: "o-1", senderId: "u2", senderName: "李" })), "inject");
+  const task = router.getTask(taskKey);
+  assert.ok(task?.participants.some((p) => p.userId === "u2"));
+
+  // 卡钩在跑命中（quoteTaskOwner 供生面）——钩值须为 host 自己的任务键
+  let k2 = "";
+  const router2 = new WpsRouter({
+    dedup: new EventDedup({ limit: 128 }),
+    ensure: async () => handle,
+    quoteTaskOwner: (q: string) => (q === "card-1" ? k2 : null),
+  });
+  await router2.handleEvent(ev({ eventId: "c0", isPrivate: true, text: "borne" }));
+  k2 = [...router2.entries()][0]![0]!;
+  handle.running = true;
+  assert.equal(await router2.handleEvent(ev({ eventId: "c1x", quoteMsgId: "card-1" })), "inject");
 });
 
 test("分诊矩阵：followup 失败 → 补充回队首，不重释已投递", async () => {

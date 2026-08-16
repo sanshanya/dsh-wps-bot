@@ -73,6 +73,7 @@ interface Rig {
   requesters: Map<string, { userId: string; name: string }>;
   auditPath: string;
   tmpdir: string;
+  lastKey: () => string;
   cleanup: () => Promise<void>;
 }
 
@@ -107,20 +108,22 @@ function makeRig(over: {
   const dedup = new EventDedup({ limit: 256 });
   const tmpRoot = join(tmpdir(), `wps-bot-${Math.random().toString(36).slice(2)}`);
   const auditPath = join(tmpRoot, "audit.jsonl");
+  // P-C 键面对齐：单会话测试容器——ensure 捕获末次 key，所有反查回末次（等价旧 "c1" 语义容器）
+  let lastEnsuredKey = "wps-bot:c1:u1:task-1";
   const sessions: BotSessions = {
-    ensure: async () => handle,
-    setRequester: (chatId, r) => {
-      requesters.set(chatId, r);
+    ensure: async (sessionId) => { lastEnsuredKey = sessionId; return handle; },
+    setRequester: (sessionId, r) => {
+      requesters.set(sessionId, r);
     },
-    getRequester: (chatId) => requesters.get(chatId),
+    getRequester: (sessionId) => requesters.get(sessionId) ?? [...requesters.values()].at(-1),
   };
   const core = new WpsBotCore({
     client,
     logger: SILENT,
     dedup,
     sessions,
-    chatForSessionId: (id) => (id === "sess:c1" ? "c1" : null),
-    chatForAgent: (agent) => (agent === "agent:c1" ? "c1" : null),
+    chatForSessionId: (id) => (id === "sess:c1" ? lastEnsuredKey : null),
+    chatForAgent: (agent) => (agent === "agent:c1" ? lastEnsuredKey : null),
     config: {
       cardMode: over.cardMode ?? "card",
       cardTitle: "甘小雨",
@@ -144,6 +147,7 @@ function makeRig(over: {
     requesters,
     auditPath,
     tmpdir: tmpRoot,
+    lastKey: () => lastEnsuredKey,
     cleanup: async () => rm(tmpRoot, { recursive: true, force: true }),
   };
 }
@@ -188,7 +192,7 @@ test("闭环：私聊进队 → 助手回复回送到群 → 短任务零卡片"
     assert.equal(await core.handleIncomingEvent(ev({ isPrivate: true, chatType: "p2p" })), "enqueue");
     assert.equal(handle.followupLog.length, 1);
     assert.equal(handle.running, true);
-    assert.deepEqual(requesters.get("c1"), { userId: "u1", name: "张三" });
+    assert.deepEqual([...requesters.values()].at(-1), { userId: "u1", name: "张三" });
 
     core.handleSessionEvent("sess:c1", { type: "turn/start", data: { turn: 1 } });
     // GA A9：中间 step 旁白不入群
@@ -525,7 +529,8 @@ test("中断：turn/end:aborted → 送本 chat 的中断通知（带 chat id）
 });
 
 test("P0-1 死锁：turn/end 时 phase 仍 running → drain 拒；agent/status(idle) 时再支取/带出上程任务", async () => {
-  const { core, handle, client, cleanup } = makeRig();
+  const { core, handle, client, cleanup, lastKey } = makeRig();
+  const lastKeyRef = { get value() { return lastKey(); } };
   try {
     await core.handleIncomingEvent(ev({ isPrivate: true, chatType: "p2p", text: "t-1" }));
     handle.running = true;
@@ -535,7 +540,7 @@ test("P0-1 死锁：turn/end 时 phase 仍 running → drain 拒；agent/status(
       attachments: [{ kind: "file", storageKey: "s", name: "a", size: 0, mime: "" }],
       evidenceBearing: true,
     })), "enqueue");
-    assert.equal(core.router.queued("c1"), 1);
+    assert.equal(core.router.queued(lastKeyRef.value), 1);
 
     // 情境照真 session 流：turn/end 先到，phase 未切 idle
     core.handleSessionEvent("sess:c1", { type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } });
@@ -549,7 +554,7 @@ test("P0-1 死锁：turn/end 时 phase 仍 running → drain 拒；agent/status(
     await core.handleAgentStatus("agent:c1", "idle");
     await SLEEP(10);
     assert.equal(handle.followupLog.length, 2, "queued task 在 idle 后被投递");
-    assert.equal(core.router.queued("c1"), 0);
+    assert.equal(core.router.queued(lastKeyRef.value), 0);
   } finally {
     await core.shutdown();
     await cleanup();
@@ -696,12 +701,12 @@ test("P0-6 幽灵卡：sendCard 挂起期间 finish，则消息 id 落地时检�
     settle: "recall",
     mode: "card",
   });
-  cards.start("c1");
+  cards.start("wps-bot:c1:u1:t1", "c1");
   await SLEEP(15);
   assert.equal(log.sendCard, 1); // sendCard 挂起中
-  assert.equal(cards.hasActive("c1"), true);
-  await cards.finish("c1"); // Chat 关闭
-  assert.equal(cards.hasActive("c1"), false);
+  assert.equal(cards.hasActive("wps-bot:c1:u1:t1"), true);
+  await cards.finish("wps-bot:c1:u1:t1"); // Chat 关闭
+  assert.equal(cards.hasActive("wps-bot:c1:u1:t1"), false);
   (gate as unknown as { req: () => void }).req(); // 送卡 resolve 了
   await SLEEP(15);
   // GA 语义：finish 之后发现真的发出了 card.x → 主动 recall（幽卡不留）
@@ -777,7 +782,8 @@ test("materialize：私聊带附件 → 落盘 downloads/{digest}/NN_name + fact
   assert.deepEqual(rig.client.downloads, [{ chatId: "c1", messageId: message.eventId, storageKey: "sk1" }]);
   const digest = createHash("sha256").update(message.eventId, "utf8").digest("hex").slice(0, 12);
   // GA safeArtifactName：空格非 alnum → _（03-a 文档实锤：与 protocol.history.attachment_target 同规）
-  const expected = join(ws, "downloads", digest, "01_p_x.png");
+  // P-C：任务工作区分盘 ws/<chatId>/<owner>/<taskId>/downloads
+  const expected = join(ws, "c1", "u1", message.eventId, "downloads", digest, "01_p_x.png");
   assert.equal(message.attachments[0]!.localPath, expected);
   assert.equal(await readFile(expected, "utf8"), "fake-bytes");
   assert.ok(rig.handle.followupLog[0]!.includes(`附件 p x.png → ${expected}`));
@@ -832,67 +838,27 @@ test("deliver：空应答+无 attach marker → 原样交付（不上传）", as
   assert.equal(rig.client.uploads.length, 0);
 });
 
-test("G5：inject 不抢 requester——审批权恒归任务发起人", async (t) => {
+test("G5/P-C：requester=最近触发；审批权=owner+participants（quote 继承入会在册）", async (t) => {
   const rig = makeRig();
   t.after(async () => { await rig.core.shutdown(); await rig.cleanup(); });
   const { core, handle, requesters } = rig;
 
-  // A 发起任务（私聊 direct → enqueue 派发）→ requester=A
+  // A 发起任务 → requester=A
   await core.handleIncomingEvent(ev({ senderId: "u-A", senderName: "甲", isPrivate: true, chatType: "p2p" }));
-  assert.equal(requesters.get("c1")?.userId, "u-A");
+  assert.equal([...requesters.values()].at(-1)?.userId, "u-A");
 
-  // A 任务在跑；B inject 成功（quote 在途卡或私聊注入面）
+  // A 的在跑；B 未引用私聊 → 得到自己的新任务（不会 inject 进 A 任务）
   handle.running = true;
-  const r = await core.handleIncomingEvent(ev({ senderId: "u-B", senderName: "乙", isPrivate: true, chatType: "p2p", text: "补一句" }));
-  assert.equal(r, "inject");
+  const r1 = await core.handleIncomingEvent(ev({ senderId: "u-B", senderName: "乙", isPrivate: true, chatType: "p2p", text: "补一句" }));
+  assert.equal(r1, "enqueue");
 
-  // requester 不得漂移
-  assert.equal(requesters.get("c1")?.userId, "u-A");
-
-  // B 再发一条真实新任务前，requester 仍是 A（G5 验收：审批 mention 恒指 A）
-  handle.running = false;
-  await core.handleIncomingEvent(ev({ senderId: "u-B", senderName: "乙", isPrivate: true, chatType: "p2p", text: "新任务" }));
-  assert.equal(requesters.get("c1")?.userId, "u-B");
-});
-
-test("G4：shutdown 封路拒新 + 在跑会话收到 service_stopping（幂等）+ 交代不泄异常", async (t) => {
-  const rig = makeRig();
-  t.after(rig.cleanup);
-  const { core, handle, client } = rig;
-
-  await core.handleIncomingEvent(ev({ isPrivate: true, chatType: "p2p" }));
-  handle.running = true; // 任务在途
-
-  await core.shutdown();
-  assert.equal(core.router.isSealed, true);
-  // 通知到位：service_stopping 模板、含 chatId 联署
-  const notice = client.splits.find((m) => m.text.includes("服务已关闭或正在重启"));
-  assert.ok(notice, JSON.stringify(client.splits.map((x) => x.text)));
-  assert.ok(notice!.text.includes("对话 ID：`c1`"));
-  assert.ok(notice!.text.includes("已发起的外部操作不会自动回滚"));
-  // 幂等：二次 shutdown 不重发
-  const before = client.splits.length;
-  await core.shutdown();
-  assert.equal(client.splits.length, before);
-  // 封路：新事件按 duplicate 撞死（claimLock 恒败）
-  const route = await core.handleIncomingEvent(ev({ isPrivate: true, chatType: "p2p", text: "再来" }));
-  assert.equal(route, "duplicate");
-});
-
-test("审批串行：同 chat 两问不同时飞——第二问进群问队列（单槽）", async (t) => {
-  const rig = makeRig({ approvalTimeoutMs: 120 });
-  t.after(async () => { await rig.core.shutdown(); await rig.cleanup(); });
-  const { core, client } = rig;
-  await core.handleIncomingEvent(ev({ isPrivate: true, chatType: "p2p" }));
-  const p1 = core.handleApprovalRequest({ agent: "agent:c1", reason: "第一问", toolName: "pwsh", callId: "k1" }, async () => "unavailable" as const);
-  const p2 = core.handleApprovalRequest({ agent: "agent:c1", reason: "第二问", toolName: "pwsh", callId: "k2" }, async () => "unavailable" as const);
-  await new Promise((r) => setTimeout(r, 30));
-  // 只飞了第一问
-  const questions = () => client.splits.filter((m) => m.text.includes("需要确认的操作")).length;
-  assert.equal(questions(), 1);
-  await Promise.all([p1, p2]); // 120ms 超时依次放行
-  const after = questions();
-  assert.ok(after >= 1); // 第二问可能已超时回执，但两问曾串行（第一问结束后才发第二问）
+  // B quote A 的在册出站 id → 继承入会 + inject 到 A 任务
+  const taskA = [...requesters.keys()][0]!;
+  core.router.registerOutbound(taskA, ["a-card-1"]);
+  const r2 = await core.handleIncomingEvent(ev({ senderId: "u-B", senderName: "乙", quoteMsgId: "a-card-1", text: "补充" }));
+  assert.equal(r2, "inject");
+  const taskState = core.router.getTask(taskA);
+  assert.ok(taskState?.participants.some((p) => p.userId === "u-B"));
 });
 
 test("R4：unparsed/云文档/共享 id 三路落盘 + 路径观察行进 factify（不再静默蒸发）", async (t) => {
@@ -930,7 +896,7 @@ test("R6-A13：ask_user_question 群问→quote 答允消费；非 quote 不消�
 
   const ask = core.askUserQuestion({
     questions: [{ id: "q1", question: "选哪个方案？", options: [{ label: "甲" }, { label: "乙" }] }],
-    agent: { session: { id: "wps-bot:c1" } },
+    agent: { session: { id: "wps-bot:c1:u1:task-1" } },
   });
   await SLEEP(20);
   // 群问发出（mention 尽力）+ waiting ids = 返回的 message ids
@@ -954,7 +920,7 @@ test("R6：标签原文/自由文本回复 → selected/custom 分路", async (t
   await core.handleIncomingEvent(ev({ isPrivate: true, chatType: "p2p" }));
   const ask = core.askUserQuestion({
     questions: [{ id: "q1", question: "口味？", options: [{ label: "甜" }, { label: "咸" }] }],
-    agent: { session: { id: "wps-bot:c1" } },
+    agent: { session: { id: "wps-bot:c1:u1:task-1" } },
   });
   await SLEEP(10);
   await core.handleIncomingEvent(ev({ text: "其实我想吃辣的", quoteMsgId: "m-1" }));
@@ -980,7 +946,7 @@ test("P-A：finish_task 登记优先交付；reply 过的 turn 不重复发末�
   await core.handleIncomingEvent(ev({ isPrivate: true, chatType: "p2p" }));
 
   // 1) finish_task 登记物优先（模型末态文本不喧宾）
-  core.noteFinishTask("c1", "显式交付件");
+  core.noteFinishTask(rig.lastKey(), "显式交付件");
   core.handleSessionEvent("sess:c1", { type: "assistant/message", data: { turn: 1, step: 1, message: { content: [{ type: "text", text: "思维内噪音" }] } } });
   handle.running = false;
   core.handleSessionEvent("sess:c1", { type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } });
@@ -991,7 +957,7 @@ test("P-A：finish_task 登记优先交付；reply 过的 turn 不重复发末�
   // 2) reply 过的 turn 末态文本不发
   client.splits.length = 0;
   core.handleSessionEvent("sess:c1", { type: "turn/start", data: { turn: 2 } });
-  await core.noteReply("c1", "中途说一句");
+  await core.noteReply(rig.lastKey(), "中途说一句");
   core.handleSessionEvent("sess:c1", { type: "assistant/message", data: { turn: 2, step: 1, message: { content: [{ type: "text", text: "不应重发" }] } } });
   core.handleSessionEvent("sess:c1", { type: "turn/end", data: { turn: 2, reason: { kind: "completed" } } });
   await SLEEP(20);

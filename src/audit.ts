@@ -32,6 +32,7 @@ export interface ApprovalAuditEntry {
   toolName?: string;
   callId?: string;
   reason?: string;
+  sessionId?: string;
   ownerUserId?: string;
   requesterUserId?: string;
   approverUserId?: string;

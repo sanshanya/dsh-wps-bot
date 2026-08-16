@@ -28,6 +28,8 @@ export interface ProgressCardsOptions {
 }
 
 interface CardState {
+  /** P-C：键=sessionId；dest=真实群/p2p chatId（出站发送面）。 */
+  destChatId: string;
   messageId: string | null;
   startedAt: number;
   lastActivity: number;
@@ -79,9 +81,9 @@ export class ProgressCards {
     this.logger = opts.logger;
   }
 
-  start(chatId: string): void {
+  start(sessionId: string, destChatId: string): void {
     if (this.opts.mode === "off") return;
-    this.states.delete(chatId);
+    this.states.delete(sessionId);
     const now = Date.now() / 1000;
     const state: CardState = {
       messageId: null,
@@ -90,14 +92,15 @@ export class ProgressCards {
       phase: "正在准备任务",
       turn: null,
       tool: "",
+      destChatId,
       lastUpdateAt: 0,
       delayTimer: null,
       heartbeatTimer: null,
       done: false,
     };
-    this.states.set(chatId, state);
+    this.states.set(sessionId, state);
     state.delayTimer = setTimeout(() => {
-      void this.ensureCard(chatId).catch((error: unknown) => {
+      void this.ensureCard(sessionId).catch((error: unknown) => {
         this.logger?.warn(`[wps-bot] progress card start failed: ${String(error)}`, error);
       });
     }, this.opts.initialDelayMs);
@@ -165,9 +168,17 @@ export class ProgressCards {
     }
   }
 
-  /** 同 chat 是否还有活卡（GA 干预不重置轮次时钟的锚点）。 */
-  hasActive(chatId: string): boolean {
-    return this.states.has(chatId);
+  /** 同 sessionId 是否还有活卡。 */
+  hasActive(sessionId: string): boolean {
+    return this.states.has(sessionId);
+  }
+
+  /** 在册卡 messageId → 所属 sessionId（P-C 引用反查面）。 */
+  sessionIdOfMessage(messageId: string): string | null {
+    for (const [sessionId, state] of this.states) {
+      if (state.messageId === messageId) return sessionId;
+    }
+    return null;
   }
 
   /** 在途进度卡 message id（GA accepts_progress_reply 的对撞对象）。 */
@@ -184,7 +195,7 @@ export class ProgressCards {
     const state = this.states.get(chatId);
     if (state === undefined || state.messageId !== null || state.done) return;
     const messageId = await this.opts.client.sendCard(
-      chatId,
+      this.states.get(chatId)?.destChatId ?? chatId,
       renderCard(state, Date.now() / 1000),
       this.opts.title,
     );
