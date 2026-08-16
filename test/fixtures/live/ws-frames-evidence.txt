@@ -1,0 +1,30 @@
+| 2 进度卡心跳 | 同 1（turn 超 15s 自然触发；不足则让任务更重） | 快照 REST 面看到卡消息 `updateCard` 轮替（宿主日志 open-event-sdk 帧无 ERROR） |
+| 3 限时审批窗 | `@甘小雨 在 C:\Temp 创建文件 hello.txt 内容 test` | ①群内弹「**需要确认的操作**」②回 `同意5分钟` → 回执「操作已批准，并开启 5 分钟自动同意窗口。」③`C:\Temp\hello.txt` 真实落盘 ④`runtime/wps-bot-approval.jsonl` 增 allowed-once 行 ⑤5 分钟内再来一次越界写**免问**直放 |
+| 4 附件材料化（选做） | `@甘小雨 这张图写了什么`+附图 | 群回引用图片内容；`${cwd}/downloads/{digest12}/01_*.png` 落盘 |
+
+超时旁路：3 分钟无人答 → 群内「审批超时未获答复，本次操作已取消。」
+
+## 验收后清点（2026-08-16 实测全绿）
+
+- [x] 场景1 文本问答：04-15 17:54 三句话总结真交付（model ep-m-20260424154710-ggz8h，read README 工具调用实证）
+- [x] 场景2 进度卡：每次任务 sp card 出现+终态 recall；心跳 updateCard 经 spy/drill 实证
+- [x] 场景3 限时审批窗：04:17:19→35 全链 16s——群问→「同意5分钟」→ **单条**回执（settled guard）→ audit `approved:true grantMinutes:5` → `C:\Temp\hello.txt` 落盘「test」
+- [x] `.sessions/` 有 `wps-bot:91793929` 持久线；宿主 stderr 零 ERROR
+- [x] 真机级回归四件固化：loader default/inject、WS 单播律、答允幂等、dispose 序
+- [ ] U1 断网重放窗口 / U2 GUI secret 渲染（发版闸，未测）
+
+## 2026-08-16T06:04Z 复验（B-1 修复后新戳，旧戳保留）
+
+06:04:20 任务→22 卡→24 群问→31 `同意5分钟`→31 单条回执→**33 模型终态回答「已在 C:\Temp\hello2.txt 创建完毕，内容为 done」**（B-1 存活期该件恒缺席）+audit approved:true+hello2.txt 落盘。B-1 病灶（session/event 全吞）闭合；session 路由→交付→卡片收口链路自此具真机证据。
+
+## 实测中暴露并已修的对接面事故（教训登记）
+
+1. loader `unwrapExports` default 遮蔽 inject（b64ba80→修复）；
+2. WS 单播律：多连接=随机丢消息（04:10 事故；答允帧被侧车吃掉、重发任务被当答允拒）——**生产同 SP 同时只允许一条入站连接**；
+3. 答允幂等：迟来答复副本不得双发 ack/audit（`1eaa6d8` settled guard）。
+
+## 附录：首帧抓包时间戳级存证（2026-08-15 实跑，唯一存证位）
+
+- 16:41:58.772Z（WS 下发）→ 16:41.470Z 本地收到：@bot 群消息 `mentions[].id=="1"`（下标串），真命中 `mentions[].identity.id == spId`；展示名 `甘小雨` 走 `<at id="N">…</at>` 字面兜底。
+- 16:42:02.138Z / 16:42:12.226Z：两条**不带 @** 的 image/file 帧——SDK Debug 面无 `Received event`（服务端未推），REST 历史可见 → **WS 群聊只推 @bot**。
+- bot 自发：`sender.type=="sp"`、`sender.id==spId`（卡片自发 content 为 null）。
