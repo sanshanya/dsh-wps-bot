@@ -43,7 +43,7 @@ export function defaultFactify(ev: WpsEvent): string {
   // 防幻觉固定行：上下文面见历史（story R2）——工具代替沉默（P-D 后）
   const head =
     `[WPS 任务 | chat ${ev.chatType || "group"}/${ev.chatId} | requester ${ev.senderName}(${ev.senderId})]` +
-    "\n注意：你的直接上下文不含本对话的旧聊天（尤其你入群前的）；要翻历史就调 search_wps_history，不要编造。";
+    "\n注意：你的直接上下文不含本对话的旧聊天（尤其你入群前的）；要翻历史就按 wps-chat skill 的 history 子命令查本地归档，不要编造。";
   const parts: string[] = [];
   // GA live-attachments：已落盘附件给模型可读路径（materialize 先于分发并完成注入）
   for (const a of ev.attachments) {

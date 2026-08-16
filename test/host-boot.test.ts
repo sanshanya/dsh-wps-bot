@@ -89,8 +89,13 @@ if (!can) {
       handlesBySession.set(sessionId, { handle, record, running: state });
       return handle;
     }
+    const installCalls: Array<{ ctx: unknown; ns: string; entry: unknown }> = [];
     const ivi = {
       ctxTools: [] as unknown[],
+      installCalls,
+      installStub: (c: unknown, ns: string, _schema: unknown, entry: unknown) => {
+        installCalls.push({ ctx: c, ns, entry });
+      },
       idev,
       handlesBySession,
       async dispose() {
@@ -222,7 +227,7 @@ if (!can) {
     const ivi = makeHost();
     const client = makeClient();
     const pushey = makePushey();
-    apply(ivi.idev, baseConfig(), { client: client.fake, makeEventClient: pushey.factory as any });
+    apply(ivi.idev, baseConfig(), { client: client.fake, makeEventClient: pushey.factory as any, installSettingsSection: ivi.installStub });
     await new Promise((r) => setTimeout(r, 30));
 
     // 1) 真 SDK dispatcher 帧 → direct → followup → 会话在跑
@@ -240,11 +245,15 @@ if (!can) {
     assert.equal((ivi.listeners.get("agent/status") ?? []).length, 1);
     assert.equal((ivi.listeners.get("approval/request") ?? []).length, 1);
     assert.equal((ivi.listeners.get("approval/request") ?? [])[0]!.prepend, true); // prepend waterfall
-    // 评估 P0 回归断言:三通道工具真实注册(防拆件断腿)
+    // 第二轮 §11.4 极简 tool 验收:finish_task 独存，reply/search_wps_history 不得注册
     const registeredToolNames = ivi.ctxTools.map((t) => (t as { name?: string }).name);
-    for (const need of ["finish_task", "reply", "search_wps_history"]) {
-      assert.ok(registeredToolNames.includes(need), `通道工具未注册: ${need} (${registeredToolNames.join(",")})`);
+    assert.ok(registeredToolNames.includes("finish_task"), `finish_task 未注册 (${registeredToolNames.join(",")})`);
+    for (const banned of ["reply", "search_wps_history"]) {
+      assert.ok(!registeredToolNames.includes(banned), `${banned} 不得再注册 (${registeredToolNames.join(",")})`);
     }
+
+    // 设置节无条件注册（无凭据态页面=凭据入口——回归锚点）
+    assert.deepEqual(ivi.installCalls.map((c) => c.ns), ["wps-bot"]);
 
     // 2) 中间旁白——fire 真引用（与 handle.agent.session 同一对象；假引用是 E2E-1 漏测根因）
     const sessionRef = (s1.handle as { agent: { session: unknown } }).agent.session;
@@ -271,7 +280,7 @@ if (!can) {
     const ivi = makeHost();
     const client = makeClient();
     const pushey = makePushey();
-    apply(ivi.idev, baseConfig(), { client: client.fake, makeEventClient: pushey.factory as any });
+    apply(ivi.idev, baseConfig(), { client: client.fake, makeEventClient: pushey.factory as any, installSettingsSection: ivi.installStub });
     await new Promise((r) => setTimeout(r, 30));
 
     const raw = frameBotMessage("p2p") as { data: string };
@@ -288,7 +297,7 @@ if (!can) {
     const ivi = makeHost();
     const client = makeClient();
     const pushey = makePushey();
-    apply(ivi.idev, baseConfig(), { client: client.fake, makeEventClient: pushey.factory as any });
+    apply(ivi.idev, baseConfig(), { client: client.fake, makeEventClient: pushey.factory as any, installSettingsSection: ivi.installStub });
     await new Promise((r) => setTimeout(r, 30));
     await pushey.bag.pusher!(frameBotMessage("p2p"));
     await waitFor(() => ivi.handlesBySession.size === 1);

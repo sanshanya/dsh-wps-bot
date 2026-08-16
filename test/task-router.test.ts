@@ -232,7 +232,7 @@ test("defaultFactify：已落盘附件给模型可读路径（GA downloads 语�
 test("R2：factify head 带防幻觉固定行；R5：image 附件带「不得声称看到了图」明示", () => {
   const text = defaultFactify(ev({ text: "看看" }));
   // 文案换代（评审：P-D 后「历史不可见」是假命题——工具已存在）
-  assert.ok(text.includes("要翻历史就调 search_wps_history，不要编造"));
+  assert.ok(text.includes("要翻历史就按 wps-chat skill 的 history 子命令查本地归档，不要编造"));
   assert.ok(text.includes("不要编造"));
   const withImage = defaultFactify(ev({ attachments: [{ kind: "image", storageKey: "k", name: "a.png", size: 1, mime: "image/png", localPath: "/tmp/x/a.png" }] as never }));
   assert.ok(withImage.includes("未进入视觉链路"));

@@ -23,8 +23,7 @@ import {
 } from "./protocol.ts";
 import type { ChatSessionHandle } from "./task-router.ts";
 import { parseTaskKey, sanitizePathKey } from "./task-keys.ts";
-import { appendApprovalAudit } from "./audit.ts";
-import { registerChannelTools, registerHistoryTool } from "./channel-tools.ts";
+import { registerChannelTools } from "./channel-tools.ts";
 import {
   WpsBotCore,
   type CoreBotOptions,
@@ -133,6 +132,14 @@ export interface BootDeps {
   client?: import("./bot.ts").BotClient;
   /** open-event-sdk Client 的工厂；默认真实 SDK。假实现只须无网络地回 dispatcher 投递。 */
   makeEventClient?: EventClientFactory;
+  /**
+   * 设置节安装面：缺省 = 运行时动态 import(@deepseek-ai/dsh-settings)。
+   * 测试注入它可避免真实 import 的成本/不确定性（9p 全量并行实证会把 bootstrap 挤出时窗）。
+   */
+  installSettingsSection?: (
+    ctx: unknown, ns: string, schema: unknown, entry: WpsBotConfig,
+    hooks: { setSource: (next: () => WpsBotConfig) => void; onChange: () => void },
+  ) => void;
 }
 
 interface ChatEntry {
@@ -412,26 +419,39 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
   let closed = false;
   let providerDisposer: (() => void) | undefined;
   let settingsWired = false;
+  // 设置提交的统一反应：bridge 关→断连；开+凭据齐→拉起 bootstrap。
+  const onSettingsChange = (): void => {
+    const live = cfgSource();
+    const creds = credsOf(live);
+    const credsOk = creds.clientId !== "" && creds.clientSecret !== "" && creds.spId !== "";
+    if (live.bridge === false && eventClient !== null && eventClient !== undefined) {
+      try { eventClient.stop(); } catch { /* 静默 */ }
+      logger.info("[wps-bot] bridge 关闭（WS 断开）");
+    } else if (live.bridge !== false && credsOk) {
+      startBootstrap();
+    }
+  };
   const wireSettingsSection = (): void => {
     if (settingsWired || closed) return;
     settingsWired = true;
     // 无条件挂——页面本身就是凭据的入口，不能只活在 bootstrap 之后（死锁规避靠调用点的离帧调度）。
+    if (deps.installSettingsSection !== undefined) {
+      try {
+        deps.installSettingsSection(rawCtx as unknown, "wps-bot", Config as unknown, config, {
+          setSource: (next: () => WpsBotConfig) => { cfgSource = next; },
+          onChange: () => { onSettingsChange(); },
+        });
+      } catch (error) {
+        logger.warn("[wps-bot] 设置节挂载失败:", error);
+      }
+      return;
+    }
     void import("@deepseek-ai/dsh-settings")
       .then((m) => {
         const inst = (m as unknown as { installSettingsSection: (c: unknown, ns: string, schema: unknown, entry: WpsBotConfig, hooks: { setSource: (n: () => WpsBotConfig) => void; onChange: () => void }) => void }).installSettingsSection;
         inst(rawCtx as unknown, "wps-bot", Config as unknown, config, {
           setSource: (next: () => WpsBotConfig) => { cfgSource = next; },
-          onChange: () => {
-            const live = cfgSource();
-            const creds = credsOf(live);
-            const credsOk = creds.clientId !== "" && creds.clientSecret !== "" && creds.spId !== "";
-            if (live.bridge === false && eventClient !== null && eventClient !== undefined) {
-              try { eventClient.stop(); } catch { /* 静默 */ }
-              logger.info("[wps-bot] bridge 关闭（WS 断开）");
-            } else if (live.bridge !== false && credsOk) {
-              startBootstrap();
-            }
-          },
+          onChange: () => { onSettingsChange(); },
         });
         logger.info("[wps-bot] 设置节已注册（ns=wps-bot）");
       })
@@ -531,14 +551,13 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
     }).tools;
     if (core !== null && toolsRegistry?.register !== undefined) {
       const owed = core;
-      registerChannelTools(toolsRegistry, (kind: "finish" | "reply", chatId: string, text: string) =>
-        kind === "finish" ? owed.noteFinishTask(chatId, text) : owed.noteReply(chatId, text),
+      // 第二轮 §2.1：唯一业务模型 tool = finish_task（reply/history 降 wps-chat skill/script）。
+      registerChannelTools(toolsRegistry, (kind: "finish", chatId: string, text: string) =>
+        owed.noteFinishTask(chatId, text),
       (agent: unknown) => chatForAgent(agent));
-      registerHistoryTool(toolsRegistry, owed, (agent: unknown) => chatForAgent(agent), (entry) =>
-        appendApprovalAudit(config.auditPath ?? "runtime/wps-bot-approval.jsonl", entry));
-      logger.info("[wps-bot] finish_task/reply/search_wps_history 通道工具已注册");
+      logger.info("[wps-bot] finish_task 通道工具已注册");
     } else {
-      logger.warn("[wps-bot] tools 服务未挂载——finish_task/reply 缺位（组合层补挂）");
+      logger.warn("[wps-bot] tools 服务未挂载——finish_task 缺位（组合层补挂）");
     }
 
     if (closed) return;
