@@ -59,7 +59,7 @@ docs/references.md       构成依据、SDK/wps-docs 索引与抓取清单
 ## 中断、关闭与生命周期纪律
 
 - 中断通知三模板（runtime_failure/service_stopping/unavailable，GA 文案对位），幂等，群聊 mention 尽力，不泄异常原文；completed 无文本分支发 unavailable。
-- teardown 序：断入站（stop+closed 闸）→ 取消/排水（含 continuable subagents，P2 欠账）→ pending 取消 → 卡片收口 → dispose，总预算可配 `shutdownDeadlineSeconds`（默认 10s，对位 GA_WPS_SHUTDOWN_TIMEOUT_SECONDS:r3-γ 裁决 b 真配入 schema）。
+- teardown 序：断入站（stop+closed 闸）→ 取消/排水（含 continuable subagents，P2 欠账）→ pending 取消 → 卡片收口 → dispose，总预算 `shutdownDeadlineSeconds`（默认 10s）。
 - 投递与清理铁律（真机固化）：turn/end 发射序先于 idle——drain 只由 `agent/status(idle)` 触发；dispose 序「core 先、chats 后」；答允幂等（settled guard）；wrap 不闭包捕获句柄，投递前 `ctx.agents.get(id)===agent` 活体校验（P2）。
 - 进度卡：标题「甘小雨」稳定格式（已收到/心跳/轮次/工具），不入 prompt/history；正常收官 recall，失败留完成态；spawn 后获得 `realCardId` 前不可交互卡路由。
 
