@@ -203,15 +203,6 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
     throw new Error(`wps-bot: config.workspaceRoot 必须是绝对路径（收到: ${config.workspaceRoot}）`);
   }
   const apiBase = config.apiBase || process.env.WPS365_API_BASE || "https://openapi.wps.cn";
-  const client: import("./bot.ts").BotClient =
-    deps.client ??
-    new WpsClient({
-      clientId: creds0.clientId,
-      clientSecret: creds0.clientSecret,
-      apiBase,
-      accessToken: config.accessToken ?? "",
-    });
-  const botIds = [creds0.clientId, creds0.spId];
 
   // ---- 每 chat 的会话句柄与 requester 注册 ----
 
@@ -315,7 +306,7 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
 
   // ---- 事件订阅核心接线 ----
 
-  function buildCore(d: EventDedup): WpsBotCore {
+  function buildCore(d: EventDedup, client: import("./bot.ts").BotClient): WpsBotCore {
     const opts: CoreBotOptions = {
       client,
       logger: logger as CoreBotOptions["logger"],
@@ -455,7 +446,23 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
       path: config.seenEventsPath ?? "runtime/wps-bot-seen-events.jsonl",
     });
     if (closed) return;
-    core = buildCore(dedup);
+    // 活凭据：页面后设的凭据必须在此刻现取（此前 creds0 是启动时空壳——bootstrap 永拿空串实证）。
+    const liveCreds = credsOf(cfgSource());
+    if (liveCreds.clientId === "" || liveCreds.clientSecret === "" || liveCreds.spId === "") {
+      logger.warn("[wps-bot] bootstrap 中止：凭据仍缺——设置页补齐后经 onChange 重试");
+      bootstrap = undefined;
+      return;
+    }
+    const client: import("./bot.ts").BotClient =
+      deps.client ??
+      new WpsClient({
+        clientId: liveCreds.clientId,
+        clientSecret: liveCreds.clientSecret,
+        apiBase,
+        accessToken: cfgSource().accessToken ?? "",
+      });
+    const botIds = [liveCreds.clientId, liveCreds.spId];
+    core = buildCore(dedup, client);
     await core.loadRegistry().catch((error) => logger.warn('[wps-bot] quoteRegistry load 失败:', error));
     if (closed) return;
     const dispatcher = new Dispatcher().registerFunc(
@@ -530,7 +537,7 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
     }
 
     if (closed) return;
-    eventClient = factory({ appId: creds0.clientId, appSecret: creds0.clientSecret, dispatcher });
+    eventClient = factory({ appId: liveCreds.clientId, appSecret: liveCreds.clientSecret, dispatcher });
     // 观测锚点必须先行：open-event-sdk 1.0.1 的 start() 在连接存活期间不 resolve——
     // 放 await 后 = 永不打印，stop 时反补一条假信号（二度报告 §三.8 实证）。
     logger.info(
