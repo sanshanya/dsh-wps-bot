@@ -36,7 +36,7 @@ export const name = "wps-bot";
 
 /** 补充 ACK 单一文案源（GA intervention seam 对位；原 bot.ts 死常量收编此）。 */
 const ACK_INTERVENTION_TEXT = "已收到补充信息，当前任务会在下一轮处理。";
-export const inject = ["agents"];
+export const inject = ["agents", "userQuestions"];
 
 export interface WpsBotConfig {
   clientId?: string;
@@ -418,6 +418,20 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
           logLevel: LogLevel.Error,
           reconnectMaxRetry: -1,
         }));
+    // R6/P-B：user-questions 通道代答 provider（组合未挂该服务时 warn 降级）
+    const userQuestions = (ctx as unknown as {
+      userQuestions?: { registerProvider?: (p: unknown) => () => void };
+    }).userQuestions;
+    if (core !== null && userQuestions?.registerProvider !== undefined) {
+      const owned = core;
+      userQuestions.registerProvider({
+        ask: (request: unknown) => owned.askUserQuestion(request as Parameters<typeof owned.askUserQuestion>[0]),
+      });
+      logger.info("[wps-bot] user-questions provider 已注册");
+    } else {
+      logger.warn("[wps-bot] userQuestions 服务未挂载——ask_user_question 将报错（组合层补挂 dsh-user-questions）");
+    }
+
     eventClient = factory({ appId: clientId, appSecret: clientSecret, dispatcher });
     // 观测锚点必须先行：open-event-sdk 1.0.1 的 start() 在连接存活期间不 resolve——
     // 放 await 后 = 永不打印，stop 时反补一条假信号（二度报告 §三.8 实证）。

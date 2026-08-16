@@ -921,3 +921,54 @@ test("R4：unparsed/云文档/共享 id 三路落盘 + 路径观察行进 factif
   assert.ok(injected.includes("未解析节点原文 →"), injected);
   assert.ok(injected.includes("unparsed_content.jsonl"));
 });
+
+test("R6-A13：ask_user_question 群问→quote 答允消费；非 quote 不消费；终态清理", async (t) => {
+  const rig = makeRig();
+  t.after(async () => { await rig.core.shutdown(); await rig.cleanup(); });
+  const { core, handle, client } = rig;
+  await core.handleIncomingEvent(ev({ isPrivate: true, chatType: "p2p" }));
+
+  const ask = core.askUserQuestion({
+    questions: [{ id: "q1", question: "选哪个方案？", options: [{ label: "甲" }, { label: "乙" }] }],
+    agent: { session: { id: "wps-bot:c1" } },
+  });
+  await SLEEP(20);
+  // 群问发出（mention 尽力）+ waiting ids = 返回的 message ids
+  const question = client.splits.find((m) => m.text.includes("需要你的回答"));
+  assert.ok(question, JSON.stringify(client.splits.map((x) => x.text)));
+  assert.ok(question!.text.includes("1) 甲"));
+  // 非 quote 消息不消费
+  const stray = await core.handleIncomingEvent(ev({ text: "甲", quoteMsgId: "" }));
+  assert.notEqual(stray, "approval-reply");
+  // quote 命中 → 消费作答（序号映射 selected）
+  const quoteReply = await core.handleIncomingEvent(ev({ text: "2", quoteMsgId: "m-1" }));
+  assert.equal(quoteReply, "approval-reply");
+  const answer = await ask;
+  assert.deepEqual(answer.answers[0], { id: "q1", selected: ["乙"] });
+});
+
+test("R6：标签原文/自由文本回复 → selected/custom 分路", async (t) => {
+  const rig = makeRig();
+  t.after(async () => { await rig.core.shutdown(); await rig.cleanup(); });
+  const { core } = rig;
+  await core.handleIncomingEvent(ev({ isPrivate: true, chatType: "p2p" }));
+  const ask = core.askUserQuestion({
+    questions: [{ id: "q1", question: "口味？", options: [{ label: "甜" }, { label: "咸" }] }],
+    agent: { session: { id: "wps-bot:c1" } },
+  });
+  await SLEEP(10);
+  await core.handleIncomingEvent(ev({ text: "其实我想吃辣的", quoteMsgId: "m-1" }));
+  const answer = await ask;
+  assert.deepEqual(answer.answers[0], { id: "q1", selected: [], custom: "其实我想吃辣的" });
+});
+
+test("error→runtime_failure：崩溃轮种走「处理期间发生运行时异常」模板（零覆盖补钉）", async (t) => {
+  const rig = makeRig();
+  t.after(async () => { await rig.core.shutdown(); await rig.cleanup(); });
+  const { core, handle, client } = rig;
+  await core.handleIncomingEvent(ev({ isPrivate: true, chatType: "p2p" }));
+  handle.running = false;
+  core.handleSessionEvent("sess:c1", { type: "turn/end", data: { turn: 1, reason: { kind: "error" } } });
+  await SLEEP(20);
+  assert.ok(client.splits.some((m) => m.text.includes("处理期间发生运行时异常")));
+});
