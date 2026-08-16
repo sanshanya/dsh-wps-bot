@@ -38,6 +38,11 @@ export class HistoryStore {
     await next;
   }
 
+  /** 排空全部在途 append 链——shutdown 必须先等它，否则接力写会撞上调用方的目录清扫（ENOTEMPTY 实证）。 */
+  async drain(): Promise<void> {
+    await Promise.all([...this.chains.values()]);
+  }
+
   private async recordOnce(file: string, ev: WpsEvent): Promise<void> {
     await mkdir(dirname(file), { recursive: true });
     await appendFile(

@@ -420,8 +420,11 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
 
   let closed = false;
   let providerDisposer: (() => void) | undefined;
+  let settingsWired = false;
   const wireSettingsSection = (): void => {
-    // 只在 bootstrap 完成（factory 已发）之后装——测试环境中 pushey factory 不得被动态 import 面冲
+    if (settingsWired || closed) return;
+    settingsWired = true;
+    // 无条件挂——页面本身就是凭据的入口，不能只活在 bootstrap 之后（死锁规避靠调用点的离帧调度）。
     void import("@deepseek-ai/dsh-settings")
       .then((m) => {
         const inst = (m as unknown as { installSettingsSection: (c: unknown, ns: string, schema: unknown, entry: WpsBotConfig, hooks: { setSource: (n: () => WpsBotConfig) => void; onChange: () => void }) => void }).installSettingsSection;
@@ -535,13 +538,17 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
     );
     if (closed) return;
     await eventClient.start();
-    wireSettingsSection();
     })().then(undefined, (error: unknown) => {
       logger.error("[wps-bot] bootstrap failed:", error);
       console.error("[wps-bot] bootstrap failed:", error);
     });
   };
 
+
+  // 设置节无条件注册（页面 = 凭据入口，无凭据时恰恰最需要它）。离帧调度：
+  // sync apply 帧内动态 import 会死锁装载器（host-boot E2E-1 pushey 实证）。
+  const settingsTimer = setTimeout(() => { wireSettingsSection(); }, 0);
+  ctx.effect(() => () => { clearTimeout(settingsTimer); settingsWired = true; });
 
   // 凭据 + bridge 面到位即发 bootstrap；两关都关的式
   const cred0Missing = creds0.clientId === "" || creds0.clientSecret === "" || creds0.spId === "";

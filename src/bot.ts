@@ -625,6 +625,8 @@ ${q.question}`);
       this.approvals.cancelAll(new Error("wps-bot: service stopping"));
       this.questionsCancelAll(Object.assign(new Error("wps-bot: 服务已关闭或正在重启"), { code: "ASK_ABORTED" }));
       await this.cards.finishAll(detailFor("service_stopping")).catch(() => undefined);
+      // history 是 fire-and-forget 接力链：不排空，shutdown 返回后仍有卡在 mkdir/appendFile 之间的写（测试 ENOTEMPTY 实证）。
+      await this.history.drain().catch(() => undefined);
     })();
     await Promise.race([work, new Promise((r) => setTimeout(r, deadlineMs))]);
   }
