@@ -35,7 +35,6 @@ export interface RouterOptions {
   /** 成功 inject 后的可控 ack（GA app.py:250 的文案语义，宿主决定发不发）。 */
   ackIntervention?: (chatId: string, senderUserId: string, senderName: string) => Promise<void>;
   /** 定制度事实包装；默认 defaultFactify。 */
-  factify?: (ev: WpsEvent) => string;
   /** 事件被真正派发（followup/inject 落地）时通知宿主（requester 追踪/卡片启动）。 */
   onDispatched?: (chatId: string, ev: WpsEvent, route: Exclude<Route, "duplicate" | "drop">) => void;
   /** GA accepts_progress_reply：quote 命中在途进度卡 message id（busy 时才成立）。 */
@@ -90,10 +89,6 @@ export class WpsRouter {
     }
   }
 
-  private factify(ev: WpsEvent): string {
-    return (this.opts.factify ?? defaultFactify)(ev);
-  }
-
   private async route(ev: WpsEvent): Promise<Route> {
     const handle = this.handles.get(ev.chatId);
     const busy = handle?.status() === "running";
@@ -104,7 +99,7 @@ export class WpsRouter {
 
     if (handle && direct && busy && !evidence) {
       // GA：运行中收到明确引用/私聊/@ → 复用原生 intervention seam 补充当前用户事实
-      if (handle.inject(this.factify(ev))) {
+      if (handle.inject(defaultFactify(ev))) {
         // ack 失败不阻止 accepted：inject 已成功，重发只会重复注入
         await this.opts.ackIntervention?.(ev.chatId, ev.senderId, ev.senderName).catch(() => undefined);
         this.opts.onDispatched?.(ev.chatId, ev, "inject");
@@ -143,7 +138,7 @@ export class WpsRouter {
     }
     try {
       this.opts.onDispatched?.(chatId, next, "enqueue");
-      await target.followup(this.factify(next));
+      await target.followup(defaultFactify(next));
       return true;
     } catch (error) {
       queue.unshift(next);

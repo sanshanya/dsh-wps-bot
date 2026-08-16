@@ -21,6 +21,7 @@
 import { createHash } from "node:crypto";
 
 import { kso1Signature, ksoDate } from "./signature.ts";
+import { isRecord } from "./protocol.ts";
 import { splitMarkdown } from "./split.ts";
 
 export class WpsApiError extends Error {
@@ -507,10 +508,6 @@ function messageId(result: Json, operation: string): string {
     throw new WpsApiError(operation, "response missing data.message_id", { code: "invalid_response" });
   }
   return messageIdValue;
-}
-
-function isRecord(value: unknown): value is Json {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /** GA client.py:146 _card_content（title 不变量由调用方 constexpr）。 */

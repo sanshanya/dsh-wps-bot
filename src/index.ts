@@ -33,6 +33,9 @@ import {
 } from "./bot.ts";
 
 export const name = "wps-bot";
+
+/** 补充 ACK 单一文案源（GA intervention seam 对位；原 bot.ts 死常量收编此）。 */
+const ACK_INTERVENTION_TEXT = "已收到补充信息，当前任务会在下一轮处理。";
 export const inject = ["agents"];
 
 export interface WpsBotConfig {
@@ -83,7 +86,7 @@ export const Config: Schema<WpsBotConfig> = Schema.object({
   approvalTimeoutSeconds: Schema.number().default(300),
   allowWindow: Schema.boolean().default(true),
   auditPath: Schema.string().default("runtime/wps-bot-approval.jsonl"),
-  ackInterventionText: Schema.string().default("已收到补充信息，当前任务会在下一轮处理。"),
+  ackInterventionText: Schema.string().default(ACK_INTERVENTION_TEXT),
   deliverChunks: Schema.number().default(4500),
 });
 
@@ -108,8 +111,6 @@ export interface EventClientOptions {
   appId: string;
   appSecret: string;
   dispatcher: unknown;
-  logLevel?: unknown;
-  reconnectMaxRetry?: number;
 }
 export type EventClientFactory = (opts: EventClientOptions) => EventClientLike;
 
@@ -303,7 +304,7 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
         allowWindow: config.allowWindow !== false,
         auditPath: config.auditPath ?? "runtime/wps-bot-approval.jsonl",
         ackInterventionText:
-          config.ackInterventionText ?? "已收到补充信息，当前任务会在下一轮处理。",
+          config.ackInterventionText ?? ACK_INTERVENTION_TEXT,
         deliverChunks: Math.max(1, config.deliverChunks ?? 4500), // F7：<=0 会让 splitMarkdown 死循环
         // workspaceRoot 与 agents.create 的 cwd 同源：downloads/artifacts 都在会话工作区下
         workspaceRoot: config.workspaceRoot || process.cwd(),
@@ -413,13 +414,7 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
           logLevel: LogLevel.Error,
           reconnectMaxRetry: -1,
         }));
-    eventClient = factory({
-      appId: clientId,
-      appSecret: clientSecret,
-      dispatcher,
-      logLevel: LogLevel.Info,
-      reconnectMaxRetry: -1,
-    });
+    eventClient = factory({ appId: clientId, appSecret: clientSecret, dispatcher });
     // 观测锚点必须先行：open-event-sdk 1.0.1 的 start() 在连接存活期间不 resolve——
     // 放 await 后 = 永不打印，stop 时反补一条假信号（二度报告 §三.8 实证）。
     logger.info(

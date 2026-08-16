@@ -29,7 +29,6 @@ export interface ApprovalAuditEntry {
   feedback?: string;
   windowExpiresAt?: number;
   grantMinutes?: number;
-  ack?: string;
   toolName?: string;
   callId?: string;
   reason?: string;
@@ -48,7 +47,6 @@ export function autoAllowEntry(input: {
   userId: string;
   review?: string;
   windowExpiresAt?: number;
-  grantMinutes?: number;
   reason?: string;
   toolName?: string;
   callId?: string;
@@ -62,7 +60,6 @@ export function autoAllowEntry(input: {
     approved: true,
     ...(input.review !== undefined ? { review: input.review } : {}),
     ...(input.windowExpiresAt !== undefined ? { windowExpiresAt: input.windowExpiresAt } : {}),
-    ...(input.grantMinutes !== undefined ? { grantMinutes: input.grantMinutes } : {}),
     ...(input.reason !== undefined ? { reason: input.reason } : {}),
     ...(input.toolName !== undefined ? { toolName: input.toolName } : {}),
     ...(input.callId !== undefined ? { callId: input.callId } : {}),

@@ -64,7 +64,6 @@ export const ACK_APPROVED = "操作已批准。";
 export const ACK_APPROVED_NO_WINDOW = "操作已批准，但本次未开启自动同意窗口。";
 export const ACK_DECLINED = "操作已取消，意见将交给模型继续处理。";
 export const ACK_TIMEOUT = "审批超时未获答复，本次操作已取消。";
-export const ACK_INTERVENTION_DEFAULT = "已收到补充信息，当前任务会在下一轮处理。";
 export function ackApprovedWindow(n: number): string {
   return `操作已批准，并开启 ${n} 分钟自动同意窗口。`;
 }
@@ -504,14 +503,9 @@ export class WpsBotCore {
     // N2：drain 表示本次又派发了下轮任务 → 卡片共养续更，只在真苦闲态（无交付+队列空）时收官
     // 注意：turn/end 迈用 phase 可能是 running——drain 拒却不能收，预设 agent/status(idle) 时处理
     const dispatched = await this.router.drain(chatId).catch(() => false);
-    if (!dispatched && this.router.queued(chatId) === 0 && !this.passBusy(chatId)) {
+    if (!dispatched && this.router.queued(chatId) === 0 && !this.router.busy(chatId)) {
       await this.cards.finish(chatId);
     }
-  }
-
-  /** 会话是否仍在跑（GA: session.is_running()）——供 finalizeTurn 判回合轮次时钟。 */
-  private passBusy(chatId: string): boolean {
-    return this.router.busy(chatId);
   }
 
   /**
