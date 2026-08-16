@@ -16,6 +16,7 @@ import { WpsClient, type Mention } from "./client.ts";
 import { ProgressCards } from "./card.ts";
 import { ApprovalWindowStore, parseConsent, windowAllows } from "./consent.ts";
 import { appendApprovalAudit, autoAllowEntry, type ApprovalAuditEntry } from "./audit.ts";
+import { InterruptionLedger, interruptionNotice, reasonForTurnEnd } from "./notify.ts";
 import type { EventDedup } from "./dedup.ts";
 import type { WpsEvent } from "./protocol.ts";
 import { WpsRouter, type ChatSessionHandle, type Route } from "./dispatch.ts";
@@ -109,6 +110,8 @@ export interface CoreBotOptions {
     deliverChunks: number;
     /** 会话工作区根：downloads/ 与 artifacts/ 的父目录（GA workspace 语义）。 */
     workspaceRoot: string;
+    /** shutdown 总预算毫秒（GA config.py:43 的 10s 对位）。 */
+    shutdownDeadlineMs?: number;
   };
 }
 
@@ -137,6 +140,7 @@ export class WpsBotCore {
   readonly cards: ProgressCards;
   private readonly windows = new ApprovalWindowStore();
   private readonly pendings = new Map<string, PendingApproval>();
+  private readonly interruptionLedger = new InterruptionLedger();
 
   /** P0-4：同 chatId 的单飞 ensure：两条并发 direct 不会为同一 sessionId 创交项。 */
   private async singleFlightEnsure(chatId: string): Promise<ChatSessionHandle> {
@@ -191,7 +195,11 @@ export class WpsBotCore {
         );
       },
       onDispatched: (chatId, ev, route) => {
-        this.sessions.setRequester(chatId, { userId: ev.senderId, name: ev.senderName });
+        // G5：requester=「审批权归属」——只有真实派发新任务（enqueue）才改写；
+        // inject 是把补充塞进 A 的任务，B 不应因此获得审批窗（f3 安全回归）
+        if (route === "enqueue") {
+          this.sessions.setRequester(chatId, { userId: ev.senderId, name: ev.senderName });
+        }
         // GA 一卡共养：同 chat 已有活卡就不起步（跨排程任务续更同一张卡；
         // 仅当 finalizeTurn 在空闲收官回完上张卡后才设新一轮的起始点）
         if (this.cards.hasActive(chatId)) return;
@@ -377,23 +385,24 @@ export class WpsBotCore {
       case "turn/end": {
         const reason = (data as { reason?: { kind?: string } } | undefined)?.reason;
         const kind = reason?.kind;
+        const turnNo = typeof data?.turn === "number" ? data.turn : 0;
         if (kind === "completed") {
           const finalText = this.turnFinalText.get(chatId);
           if (finalText !== undefined && finalText.length > 0) {
             this.turnFinalText.delete(chatId);
             void this.deliver(chatId, finalText);
+          } else {
+            // G3：completed 空文本原静默——GA 同分支发「无法继续完成」通告
+            this.turnFinalText.delete(chatId);
+            void this.notifyInterrupted(chatId, "unavailable", `${chatId}:${turnNo}:completed-empty`);
           }
-        } else if (kind === "error" || kind === "aborted") {
-          this.turnFinalText.delete(chatId);
-          this.cancelPending(chatId); // M1：turn 死去，死的 pending 不得以幻影走答允
-          void this.interrupt(chatId, kind);
-        } else if (kind === "max-tokens" || kind === "blocked") {
-          // N3：限定的轮次/输出都给了但仍未终态——按 GA「无可交付 → 原 chat 通告」补一条
-          this.turnFinalText.delete(chatId);
-          this.cancelPending(chatId);
-          void this.interrupt(chatId, kind);
         } else {
           this.turnFinalText.delete(chatId);
+          const noticeReason = reasonForTurnEnd(String(kind));
+          if (noticeReason !== null) {
+            this.cancelPending(chatId); // M1：turn 死去，死的 pending 不得以幻影走答允
+            void this.notifyInterrupted(chatId, noticeReason, `${chatId}:${turnNo}:${String(kind)}`);
+          }
         }
         void this.finalizeTurn(chatId);
         break;
@@ -438,23 +447,6 @@ export class WpsBotCore {
     }
   }
 
-  async interrupt(chatId: string, kind: unknown): Promise<void> {
-    const phrase =
-      kind === "aborted"
-        ? "被中止"
-        : kind === "error"
-          ? "失败"
-          : "未在限定的轮次/输出内完成";
-    try {
-      await this.client.sendMarkdown(
-        chatId,
-        `[任务已中止] 当前任务已${phrase}（chat ${chatId}）。如需继续，请重新发起任务。`,
-      );
-    } catch (error) {
-      this.logger.warn("[wps-bot] interrupt notice failed:", error);
-    }
-  }
-
   /**
    * agent/status 事件桥接——全部排队下游的挽救点：
    * （report P0-1 的死锁场景修复）turn/end 迈用时 phase 仍 running；kick.finally 切 idle 时才真正
@@ -495,12 +487,40 @@ export class WpsBotCore {
     return this.router.busy(chatId);
   }
 
-  /** 卸载/重启：失败 pending 回 cancelled；卡片完结；送因回退 commit 的 bash 记志全部留意。 */
+  /**
+   * 卸载/重启（G4 对位 GA app.py:run 的 service_stopping 面）：
+   *  1. seal：router 拒新 claim；
+   *  2. 对在册 chat（队列非空或卡片在途或有 pending）群发 service_stopping（幂等）；
+   *  3. pending 回 cancelled；卡片完结；deadline 兜底（config.shutdownDeadlineMs，默认 10s）。
+   */
   async shutdown(): Promise<void> {
-    for (const chatId of [...this.pendings.keys()]) {
-      this.cancelPending(chatId);
+    this.router.seal();
+    const deadlineMs = this.cfg.shutdownDeadlineMs ?? 10_000;
+    const work = (async () => {
+      for (const chatId of this.router.chatIdsWithWork()) {
+        await this.notifyInterrupted(chatId, "service_stopping");
+      }
+      for (const chatId of [...this.pendings.keys()]) {
+        this.cancelPending(chatId);
+      }
+      await this.cards.finishAll().catch(() => undefined);
+    })();
+    await Promise.race([work, new Promise((r) => setTimeout(r, deadlineMs))]);
+  }
+
+  /** G3：中断通知——模板对位 ga_wps/app.py:430-435；幂等 + 群聊 mention 尽力 + 文案不泄异常串。 */
+  async notifyInterrupted(chatId: string, reason: Parameters<typeof interruptionNotice>[0], key?: string): Promise<void> {
+    if (!this.interruptionLedger.claim(key ?? `${chatId}:${reason}`)) return;
+    const requester = this.sessions.getRequester(chatId);
+    const mention =
+      requester === undefined
+        ? null
+        : await this.client.resolveMention(requester.userId, requester.name).catch(() => null);
+    try {
+      await this.client.sendMarkdownSplit(chatId, interruptionNotice(reason, chatId), mention);
+    } catch (error) {
+      this.logger.warn("[wps-bot] interruption notice failed:", error);
     }
-    await this.cards.finishAll().catch(() => undefined);
   }
 
   pendingCount(): number {

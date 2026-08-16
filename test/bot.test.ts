@@ -475,9 +475,11 @@ test("N3：max-tokens / blocked 两类 turn/end 也送中断通知 + 清 pending
     handle.running = false;
     core.handleSessionEvent("sess:c1", { type: "turn/end", data: { turn: 1, reason: { kind: "blocked" } } });
     await SLEEP(10);
-    const notice = client.markdown.find((m) => m.text.includes("任务已中止"));
+    // G3：max-tokens/blocked → unavailable 模板（对位 app.py:430-435，「已发起的外部操作不会自动回滚」联署）
+    const notice = client.splits.find((m) => m.text.includes("当前对话已中断"));
     assert.ok(notice);
-    assert.ok(notice!.text.includes("限定的轮次/输出"));
+    assert.ok(notice!.text.includes("当前任务无法继续完成"));
+    assert.ok(notice!.text.includes("已发起的外部操作不会自动回滚"));
 
     const rig2 = makeRig();
     try {
@@ -485,7 +487,7 @@ test("N3：max-tokens / blocked 两类 turn/end 也送中断通知 + 清 pending
       rig2.handle.running = false;
       rig2.core.handleSessionEvent("sess:c1", { type: "turn/end", data: { turn: 1, reason: { kind: "max-tokens" } } });
       await SLEEP(10);
-      assert.ok(rig2.client.markdown.some((m) => m.text.includes("限定的轮次/输出")));
+      assert.ok(rig2.client.splits.some((m) => m.text.includes("当前任务无法继续完成")));
     } finally {
       await rig2.core.shutdown();
       await rig2.cleanup();
@@ -529,9 +531,9 @@ test("中断：turn/end:aborted → 送本 chat 的中断通知（带 chat id）
     // wire 形状：packages/core/session/src/types.ts:252 — { turn, reason: { kind } }
     core.handleSessionEvent("sess:c1", { type: "turn/end", data: { turn: 2, reason: { kind: "aborted" } } });
     await SLEEP(10);
-    const notice = client.markdown.find((m) => m.text.includes("任务已中止"));
+    const notice = client.splits.find((m) => m.text.includes("当前对话已中断"));
     assert.ok(notice);
-    assert.ok(notice!.text.includes("c1"));
+    assert.ok(notice!.text.includes("对话 ID：`c1`"));
   } finally {
     await core.shutdown();
     await cleanup();
@@ -844,4 +846,51 @@ test("deliver：空应答+无 attach marker → 原样交付（不上传）", as
   await rig.core.deliver("c1", "普通回答");
   assert.equal(rig.client.splits[0]!.text, "普通回答");
   assert.equal(rig.client.uploads.length, 0);
+});
+
+test("G5：inject 不抢 requester——审批权恒归任务发起人", async (t) => {
+  const rig = makeRig();
+  t.after(async () => { await rig.core.shutdown(); await rig.cleanup(); });
+  const { core, handle, requesters } = rig;
+
+  // A 发起任务（私聊 direct → enqueue 派发）→ requester=A
+  await core.handleIncomingEvent(ev({ senderId: "u-A", senderName: "甲", isPrivate: true, chatType: "p2p" }));
+  assert.equal(requesters.get("c1")?.userId, "u-A");
+
+  // A 任务在跑；B inject 成功（quote 在途卡或私聊注入面）
+  handle.running = true;
+  const r = await core.handleIncomingEvent(ev({ senderId: "u-B", senderName: "乙", isPrivate: true, chatType: "p2p", text: "补一句" }));
+  assert.equal(r, "inject");
+
+  // requester 不得漂移
+  assert.equal(requesters.get("c1")?.userId, "u-A");
+
+  // B 再发一条真实新任务前，requester 仍是 A（G5 验收：审批 mention 恒指 A）
+  handle.running = false;
+  await core.handleIncomingEvent(ev({ senderId: "u-B", senderName: "乙", isPrivate: true, chatType: "p2p", text: "新任务" }));
+  assert.equal(requesters.get("c1")?.userId, "u-B");
+});
+
+test("G4：shutdown 封路拒新 + 在跑会话收到 service_stopping（幂等）+ 交代不泄异常", async (t) => {
+  const rig = makeRig();
+  t.after(rig.cleanup);
+  const { core, handle, client } = rig;
+
+  await core.handleIncomingEvent(ev({ isPrivate: true, chatType: "p2p" }));
+  handle.running = true; // 任务在途
+
+  await core.shutdown();
+  assert.equal(core.router.isSealed, true);
+  // 通知到位：service_stopping 模板、含 chatId 联署
+  const notice = client.splits.find((m) => m.text.includes("服务已关闭或正在重启"));
+  assert.ok(notice, JSON.stringify(client.splits.map((x) => x.text)));
+  assert.ok(notice!.text.includes("对话 ID：`c1`"));
+  assert.ok(notice!.text.includes("已发起的外部操作不会自动回滚"));
+  // 幂等：二次 shutdown 不重发
+  const before = client.splits.length;
+  await core.shutdown();
+  assert.equal(client.splits.length, before);
+  // 封路：新事件按 duplicate 撞死（claimLock 恒败）
+  const route = await core.handleIncomingEvent(ev({ isPrivate: true, chatType: "p2p", text: "再来" }));
+  assert.equal(route, "duplicate");
 });

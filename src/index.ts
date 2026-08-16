@@ -153,13 +153,13 @@ export async function createOrResume(
 export function clearDisposedHandles(
   chats: Map<string, { handle?: { agent?: unknown } }>,
   payload: unknown,
-): number {
+): string[] {
   const agent = (payload as { agent?: unknown } | null | undefined)?.agent;
-  let cleared = 0;
-  for (const [, entry] of chats) {
+  const cleared: string[] = [];
+  for (const [chatId, entry] of chats) {
     if (entry.handle?.agent !== undefined && entry.handle.agent === agent) {
       entry.handle = undefined;
-      cleared += 1;
+      cleared.push(chatId);
     }
   }
   return cleared;
@@ -192,15 +192,21 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
 
   const chats = new Map<string, ChatEntry>();
 
-  function wrap(chatId: string, handle: AgentHandleLike): ChatSessionHandle {
+  // f2#2/b2：不闭包捕获 handle——dispose 后旧句柄成尸；每次调用现读 chats 在册句柄
+  function wrap(chatId: string): ChatSessionHandle {
+    const live = (): AgentHandleLike | undefined => chats.get(chatId)?.handle;
     const userMessage = (text: string) =>
       createUserMessage({ content: [{ type: "text", text }], source: { kind: "user" } });
     return {
-      sessionId: String(handle.agent?.session?.id ?? handle.session?.id ?? `wps-bot:${chatId}`),
-      status: () => handle.agent?.status,
-      followup: (text: string) => handle.agent?.followup(userMessage(text)),
+      get sessionId() {
+        const handle = live();
+        return String(handle?.agent?.session?.id ?? handle?.session?.id ?? `wps-bot:${chatId}`);
+      },
+      status: () => live()?.agent?.status,
+      followup: (text: string) => live()?.agent?.followup(userMessage(text)),
       inject: (text: string) => {
-        if (handle.agent?.status !== "running") return false;
+        const handle = live();
+        if (handle?.agent?.status !== "running") return false;
         try {
           handle.agent.inject(userMessage(text));
           return true;
@@ -214,7 +220,7 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
 
   async function ensure(chatId: string): Promise<ChatSessionHandle> {
     let entry = chats.get(chatId);
-    if (entry !== undefined && entry.handle !== undefined) return wrap(chatId, entry.handle);
+    if (entry !== undefined && entry.handle !== undefined) return wrap(chatId);
     // F5/R17：resume 优先——持久 line 截盘上已存在同 id 时 create 走拒绝路径，turn 照跑零持久化零信号
     const sessionId = SessionId(`wps-bot:${chatId}`);
     const handle = (await createOrResume(ctx.agents, {
@@ -230,7 +236,7 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
       chats.set(chatId, entry);
     }
     entry.handle = handle;
-    return wrap(chatId, handle);
+    return wrap(chatId);
   }
 
   function ownSessionId(entry: ChatEntry): string {
@@ -303,6 +309,16 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
   // N1：payload 形状是 { agent }（runtime-types.ts:168），不能按整包做恒等比较
   void ctx.on("agent/disposed", (payload: unknown) => {
     clearDisposedHandles(chats, payload);
+    // f2#2：router 在册句柄同步清尸（卡片收官/pending 取消在 core 内成组）
+    void core?.handleAgentDisposed(payload);
+  });
+
+  // P0-1 生死线：turn/end 在 setPhase(idle) 前发射（agent-loop agent.ts:216-223 vs 316-322）——
+  // drain/卡片收官只能靠 idle 转换触发。payload = { agent, status }（runtime-types）。
+  void ctx.on("agent/status", (payload: unknown) => {
+    if (core === null) return;
+    const p = payload as { agent?: unknown; status?: unknown } | null | undefined;
+    void core.handleAgentStatus(p?.agent, String(p?.status ?? ""));
   });
 
   void ctx.on("session/event", (session: AgentSessionLike, event: { type: string; data?: unknown }) => {

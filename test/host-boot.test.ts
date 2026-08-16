@@ -225,6 +225,8 @@ if (!can) {
     assert.ok(s1.record.followups[0]!.includes("第一份出栈答数"));
     assert.ok(s1.running.running);
     assert.equal((ivi.listeners.get("session/event") ?? []).length, 1);
+    // P0-1 生死线：turn/end 在 setPhase(idle) 前发射——drain 只能靠 agent/status(idle) 触发
+    assert.equal((ivi.listeners.get("agent/status") ?? []).length, 1);
     assert.equal((ivi.listeners.get("approval/request") ?? []).length, 1);
     assert.equal((ivi.listeners.get("approval/request") ?? [])[0]!.prepend, true); // prepend waterfall
 
@@ -320,8 +322,7 @@ if (!can) {
       ["c1", { handle: { agent: "agent-x" } }],
     ]);
     const cleared = clearDisposedHandles(chats as any, { agent: "agent-x" });
-    assert.equal(cleared, 1);
-    assert.equal(chats.get("c1")!.handle, undefined);
+    assert.deepEqual(cleared, ["c1"]);
     assert.equal(chats.get("c1")!.handle === undefined, true);
   });
 }

@@ -82,18 +82,18 @@ test("clearDisposedHandles：payload 是 { agent } 包装（runtime-types.ts:168
     ["c3", { handle: undefined }],
   ]);
   const cleared = clearDisposedHandles(chats, { agent: deadAgent });
-  assert.equal(cleared, 1);
+  assert.deepEqual(cleared, ["c1"]);
   assert.equal(chats.get("c1")!.handle, undefined);
   assert.equal(chats.get("c2")!.handle!.agent, liveAgent);
 
   // 全包形状（裸 Agent）不再清——这个正是 N1
   const cleared2 = clearDisposedHandles(chats, deadAgent);
-  assert.equal(cleared2, 0);
+  assert.deepEqual(cleared2, []);
   assert.equal(chats.get("c2")!.handle!.agent, liveAgent);
 
   // 空 payload 不炸
-  assert.equal(clearDisposedHandles(chats, null), 0);
-  assert.equal(clearDisposedHandles(chats, {}), 0);
+  assert.deepEqual(clearDisposedHandles(chats, null), []);
+  assert.deepEqual(clearDisposedHandles(chats, {}), []);
 });
 
 test("default 导出必须携带 inject（vendor/loader unwrapExports 优先 default，缺则真机炸 without inject）", async () => {

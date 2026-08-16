@@ -151,6 +151,18 @@ export class WpsRouter {
     }
   }
 
+  /** G4：shutdown 通知枚举面——队列非空或会话在跑的在册 chat。 */
+  chatIdsWithWork(): string[] {
+    const out: string[] = [];
+    for (const [chatId] of this.handles) {
+      if (this.busy(chatId) || (this.queues.get(chatId)?.length ?? 0) > 0) out.push(chatId);
+    }
+    for (const [chatId, queue] of this.queues) {
+      if (queue.length > 0 && !out.includes(chatId)) out.push(chatId);
+    }
+    return out;
+  }
+
   /** 会话内是否还有待办（卡片/审批计时器等效观察）。 */
   queued(chatId: string): number {
     return this.queues.get(chatId)?.length ?? 0;
@@ -160,8 +172,19 @@ export class WpsRouter {
     return this.handles.entries();
   }
 
+  private sealed = false;
+
+  /** G4：shutdown 首幕——封路后 claimLock 恒败（新事件一律不再入场）。 */
+  seal(): void {
+    this.sealed = true;
+  }
+  get isSealed(): boolean {
+    return this.sealed;
+  }
+
   /** 幂等三件套（approval reply 路线与 dispatch 路线共享 seen_events） */
   claimLock(eventId: string): boolean {
+    if (this.sealed) return false;
     return this.opts.dedup.claim(eventId);
   }
   async recordAcceptance(eventId: string): Promise<boolean> {
