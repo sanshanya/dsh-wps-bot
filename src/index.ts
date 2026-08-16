@@ -25,6 +25,7 @@ import type { ChatSessionHandle } from "./dispatch.ts";
 import { parseTaskKey } from "./task-keys.ts";
 import { appendApprovalAudit } from "./audit.ts";
 import { defineTool as realDefineTool } from "@deepseek-ai/dsh-tools";
+import { registerChannelTools, registerHistoryTool } from "./channel-tools.ts";
 import {
   WpsBotCore,
   type CoreBotOptions,
@@ -521,89 +522,4 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
   }, "wps-bot.serve");
 }
 
-/** P-A:finish_task/reply 的注册面（defineTool 形构最小集——不具有也降级 warn）。 */
-/** P-D：search_wps_history——同 chat 读开归档检索；每次调用 allby 读审计行。 */
-function registerHistoryTool(
-  registry: { register?: (tool: unknown) => void },
-  owned: WpsBotCore,
-  chatForAgent: (agent: unknown) => string | null,
-  auditAppend: (entry: import("./audit.ts").ApprovalAuditEntry) => Promise<void>,
-): void {
-  // 真 defineTool（P0-3 修复：弃手搓——真实校验输入面一致）
-  registry.register?.(realDefineTool({
-    name: "search_wps_history",
-    description: "检索本对话（群/p2p）的聊天历史归档，按关键词面出最近条目；历史为读开素材，不做私权。",
-    parameters: {
-      query: { type: "string", required: true, description: "关键词（空白分隔，任一命中即出件）。" },
-      limit: { type: "number", default: 5, description: "最多返回条数（上限 20）。" },
-      chat_id: { type: "string", default: "", description: "可选：跨群读开——精确 chat id；缺省=当前对话。" },
-    },
-    output: {
-      schema: {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          hits: { type: "array", items: { type: "string" }, default: [] },
-        },
-      },
-      render: (_args: unknown, value: unknown) => [{ type: "text", text: JSON.stringify(value) }],
-    },
-    async execute(args: { query: string; limit?: number }, exec: { agent?: unknown }) {
-      const sessionId = chatForAgent(exec.agent);
-      const chatId = sessionId !== null ? (parseTaskKey(sessionId)?.chatId ?? sessionId) : null;
-      if (chatId === null) return { hits: [] };
-      const chatIdArg = (args as unknown as { chat_id?: string }).chat_id;
-      const targetChat = typeof chatIdArg === "string" && chatIdArg.length > 0 ? chatIdArg : chatId;
-      const hits = await owned.searchHistory(targetChat, String(args.query), Math.min(20, Math.max(1, args.limit ?? 5)));
-      // P-D 读审计：检索动作照同组审计行载账
-      await auditAppend({
-        timestamp: Math.floor(Date.now() / 1000),
-        kind: "decision",
-        auditOutcome: "decision",
-        chatId,
-        userId: sessionId ?? chatId,
-        approved: true,
-        reason: `search_wps_history q=?${args.query}?`,
-        feedback: hits.length > 0 ? `hits=${hits.length}` : "empty",
-      }).catch(() => undefined);
-      return { hits: hits.map((h) => `[${new Date(h.ts * 1000).toISOString()}] ${h.senderName}: ${h.text}`) };
-    },
-  } as never));
-}
-
-function registerChannelTools(
-  registry: { register?: (tool: unknown) => void },
-  act: (kind: "finish" | "reply", chatId: string, text: string) => Promise<void> | void,
-  chatForAgentFn: (agent: unknown) => string | null,
-): void {
-  // 真 defineTool（P0-3 修复：弃手搓——真实校验输入面一致）
-  const make = (kind: "finish" | "reply", name: string, description: string) =>
-    realDefineTool({
-      name,
-      description,
-      parameters: {
-        text: { type: "string", required: true, description: "要发给对话的文本。" },
-      },
-      output: {
-        schema: {
-          type: "object",
-          additionalProperties: false,
-          properties: { delivered: { type: "boolean", default: false } },
-        },
-        render: (_args: unknown, value: unknown) => [{ type: "text", text: JSON.stringify(value) }],
-      },
-      async execute(args: { text: string }, exec: { agent?: unknown }) {
-        const chatId = chatForAgentFn(exec?.agent);
-        if (chatId === null) throw new Error(`${name}: 租户无从落聊`);
-        await act(kind, chatId, args.text);
-        return { delivered: true };
-      },
-    });
-  registry.register?.(make("reply", "reply", "中途回复对话——立即发送，会话继续。今日已说话须本工具；结束须 finish_task。"));
-  registry.register?.(make("finish", "finish_task", "任务完成——登记最终交付文本，随后由通道在轮末交付。必须以此结束任务。"));
-}
-
-export { approvalQuestion, ACK_APPROVED, ACK_DECLINED, ACK_TIMEOUT, WpsBotCore } from "./bot.ts";
-// 装载器真值 vendor/loader/src:194：`exports.default ?? exports`——default 在则遮蔽具名 inject，
-// 导致 fork 无声明、ctx.agents 访问炸「cannot get property without inject」（真机实证）。两面都要。
 export default { name, inject, Config, apply };
