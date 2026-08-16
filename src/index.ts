@@ -180,6 +180,8 @@ export function clearDisposedHandles(
 }
 
 export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}): void {
+  // 供应商/模型 settings 覆位：settings > Config（dsh-settings 可选——动态 import 失败静默回退）
+  let cfgSource: () => WpsBotConfig = () => config;
   const ctx: any = rawCtx;
   const logger = ctx.logger ?? console;
   const ctxLogger = typeof ctx.logger === "function" ? ctx.logger("wps-bot") : logger;
@@ -268,8 +270,8 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
       sessionId,
       cwd,
       agentOptions: {
-        provider: config.provider ?? "deepseek-official",
-        model: config.model ?? "deepseek-v4-flash",
+        provider: cfgSource().provider ?? "deepseek-official",
+        model: cfgSource().model ?? "deepseek-v4-flash",
       },
     })) as AgentHandleLike;
     if (entry === undefined) {
@@ -414,6 +416,19 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
 
   let closed = false;
   let providerDisposer: (() => void) | undefined;
+  const wireSettingsSection = (): void => {
+    // 只在 bootstrap 完成（factory 已发）之后装——测试环境中 pushey factory 不得被动态 import 面冲
+    void import("@deepseek-ai/dsh-settings")
+      .then((m) => {
+        const inst = (m as unknown as { installSettingsSection: (c: unknown, ns: string, schema: unknown, entry: WpsBotConfig, hooks: { setSource: (n: () => WpsBotConfig) => void; onChange: () => void }) => void }).installSettingsSection;
+        inst(rawCtx as unknown, "wps-bot", Config as unknown, config, {
+          setSource: (next: () => WpsBotConfig) => { cfgSource = next; },
+          onChange: () => { /* ensure 时实读 */ },
+        });
+      })
+      .catch(() => { /* absent peer → noop */ });
+  };
+
   const bootstrap = (async () => {
     dedup = await EventDedup.load({
       limit: 2048,
@@ -503,7 +518,9 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
     );
     if (closed) return;
     await eventClient.start();
+    wireSettingsSection();
   })();
+
 
   bootstrap.catch((error: unknown) => {
     // 静默病灶实证：bsl 组合 cordis logger 无处落字——boot 失败必须同时砸 stderr（F5a 转正）

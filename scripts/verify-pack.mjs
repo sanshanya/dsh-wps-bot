@@ -38,7 +38,7 @@ const pkg = Array.isArray(packJson) ? packJson[0] : packJson;
 const tarball = join(root, pkg.filename);
 
 // 2. 白名单断言
-const ALLOW = /^(lib\/)|^(README\.md|LICENSE|cordis\.patch\.yml|package\.json|examples\/wps-bot\.cordis\.yml)$/;
+const ALLOW = /^(lib\/)|^(src\/client\/)|^(README\.md|LICENSE|cordis\.patch\.yml|package\.json|examples\/wps-bot\.cordis\.yml)$/;
 const bad = pkg.files.map((f) => f.path).filter((p) => !ALLOW.test(p));
 if (bad.length) fail(`tarball 含非白名单文件: ${JSON.stringify(bad)}`);
 

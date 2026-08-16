@@ -20,14 +20,12 @@
       "types": "./lib/protocol.d.ts",
       "default": "./lib/protocol.js"
     },
-    "./client": {
-      "types": "./lib/client.d.ts",
-      "default": "./lib/client.js"
-    },
+    "./client": "./src/client/client.js",
     "./package.json": "./package.json"
   },
   "files": [
     "lib",
+    "src/client",
     "cordis.patch.yml",
     "examples/wps-bot.cordis.yml",
     "README.md",
