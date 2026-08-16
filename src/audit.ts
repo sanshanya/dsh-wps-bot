@@ -32,6 +32,9 @@ export interface ApprovalAuditEntry {
   toolName?: string;
   callId?: string;
   reason?: string;
+  ownerUserId?: string;
+  requesterUserId?: string;
+  approverUserId?: string;
 }
 
 export async function appendApprovalAudit(

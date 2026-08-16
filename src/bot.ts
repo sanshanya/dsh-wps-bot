@@ -18,6 +18,7 @@ import { ApprovalWindowStore, parseConsent, windowAllows } from "./consent.ts";
 import { appendApprovalAudit, autoAllowEntry, type ApprovalAuditEntry } from "./audit.ts";
 import { detailFor, InterruptionLedger, interruptionNotice, reasonForTurnEnd } from "./notify.ts";
 import { EvidenceStore } from "./evidence.ts";
+import { QuoteRegistry } from "./quote-registry.ts";
 import type { EventDedup } from "./dedup.ts";
 import type { WpsEvent } from "./protocol.ts";
 import { WpsRouter, type ChatSessionHandle, type Route } from "./dispatch.ts";
@@ -112,6 +113,8 @@ export interface CoreBotOptions {
     workspaceRoot: string;
     /** shutdown 总预算毫秒（GA config.py:43 的 10s 对位）。 */
     shutdownDeadlineMs?: number;
+    /** 引用继承注册 table 档（默认 workspaceRoot/quote-registry.jsonl；null=内存态）。 */
+    quoteRegistryPath?: string | null;
   };
 }
 
@@ -150,12 +153,22 @@ export class WpsBotCore {
   private readonly pendingQuestions = new Map<string, PendingQuestion>();
   private readonly interruptionLedger = new InterruptionLedger();
   private evidenceStore: EvidenceStore | null = null;
+  private quoteRegistryStore: QuoteRegistry | null = null;
+  get quoteRegistry(): QuoteRegistry {
+    this.quoteRegistryStore ??= new QuoteRegistry(
+      this.cfg.quoteRegistryPath ?? `${this.cfg.workspaceRoot}/quote-registry.jsonl`,
+    );
+    return this.quoteRegistryStore;
+  }
   private get evidence(): EvidenceStore {
     this.evidenceStore ??= new EvidenceStore(this.cfg.workspaceRoot);
     return this.evidenceStore;
   }
   private readonly lastDelivered = new Set<string>();
   private readonly lastFailure = new Map<string, string>();
+  private readonly finishDeliverable = new Map<string, string>();
+  private readonly repliedTurn = new Map<string, number>();
+  private readonly currentTurn = new Map<string, number>();
 
   /** P0-4：同 chatId 的单飞 ensure：两条并发 direct 不会为同一 sessionId 创交项。 */
   private async singleFlightEnsure(chatId: string): Promise<ChatSessionHandle> {
@@ -487,6 +500,12 @@ export class WpsBotCore {
 
     const reply = await this.waitReply(chatId, requester.userId, req.signal);
     const decision = decideApproval(reply, allowWindow, chatId, requester.userId, reason, this.windows);
+    if (reply.kind === "reply") {
+      // audit 三元组（现行单 requester：三者同形；P-C 多参与者时分叉到各自真实值）
+      decision.audit.ownerUserId = requester.userId;
+      decision.audit.requesterUserId = requester.userId;
+      decision.audit.approverUserId = requester.userId;
+    }
     await appendApprovalAudit(this.cfg.auditPath, decision.audit).catch((error: unknown) => {
       this.logger.warn("[wps-bot] audit append failed:", error);
     });
@@ -518,6 +537,8 @@ export class WpsBotCore {
         break;
       }
       case "turn/start": {
+        const tNo = (data as { turn?: number } | undefined)?.turn;
+        if (typeof tNo === "number") this.currentTurn.set(chatId, tNo);
         const turn = data?.turn;
         this.cards.phase(chatId, typeof turn === "number" ? { turn } : {});
         break;
@@ -537,7 +558,10 @@ export class WpsBotCore {
         const turnNo = typeof data?.turn === "number" ? data.turn : 0;
         let deferred = false;
         if (kind === "completed") {
-          const finalText = this.turnFinalText.get(chatId);
+          const registered = this.finishDeliverable.get(chatId);
+          if (registered !== undefined) this.finishDeliverable.delete(chatId);
+          const skipFallback = this.repliedTurn.get(chatId) === (this.currentTurn.get(chatId) ?? 0) && this.repliedTurn.has(chatId);
+          const finalText = registered ?? (skipFallback ? undefined : this.turnFinalText.get(chatId));
           if (finalText !== undefined && finalText.length > 0) {
             this.turnFinalText.delete(chatId);
             // B4：交付结果回填卡片真值——收官延后到 deliver 落地（真值到时才可见）
@@ -580,7 +604,8 @@ export class WpsBotCore {
       const { cleaned, files, errors } = this.extractArtifacts(text);
       const deliveryErrors = [...errors];
       if (cleaned.length > 0 || files.length === 0) {
-        await this.client.sendMarkdownSplit(chatId, cleaned, null, this.cfg.deliverChunks);
+        const ids = await this.client.sendMarkdownSplit(chatId, cleaned, null, this.cfg.deliverChunks);
+        await this.quoteRegistry.register(ids, `wps-bot:${chatId}`, chatId).catch(() => undefined);
       }
       for (const { marker, candidate } of files) {
         const name = basename(candidate);
@@ -681,6 +706,17 @@ export class WpsBotCore {
     } catch (error) {
       this.logger.warn("[wps-bot] interruption notice failed:", error);
     }
+  }
+
+  /** finish_task 工具登记终态交付件（turn/end completed 时优先交付；宽松默认仍留回落面）。 */
+  noteFinishTask(chatId: string, text: string): void {
+    this.finishDeliverable.set(chatId, text);
+  }
+
+  /** reply 工具即时发群 + 标记本 turn 已答复（末态文本不再重发）。 */
+  async noteReply(chatId: string, text: string): Promise<void> {
+    this.repliedTurn.set(chatId, this.currentTurn.get(chatId) ?? 0);
+    await this.client.sendMarkdownSplit(chatId, text, null, this.cfg.deliverChunks);
   }
 
   pendingCount(): number {

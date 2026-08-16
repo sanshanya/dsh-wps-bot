@@ -33,7 +33,7 @@ export const name = "wps-bot";
 
 /** 补充 ACK 单一文案源（GA intervention seam 对位；原 bot.ts 死常量收编此）。 */
 const ACK_INTERVENTION_TEXT = "已收到补充信息，当前任务会在下一轮处理。";
-export const inject = ["agents", "userQuestions"];
+export const inject = ["agents", "userQuestions", "tools"];
 
 export interface WpsBotConfig {
   clientId?: string;
@@ -429,6 +429,20 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
       logger.warn("[wps-bot] userQuestions 服务未挂载——ask_user_question 将报错（组合层补挂 dsh-user-questions）");
     }
 
+    // P-A：finish_task/reply 通道工具注册（tools 服务缺席时 warn 降级——persona 契约仍可通过提示词走）
+    const toolsRegistry = (ctx as unknown as {
+      tools?: { register?: (tool: unknown) => void };
+    }).tools;
+    if (core !== null && toolsRegistry?.register !== undefined) {
+      const owned = core;
+      registerChannelTools(toolsRegistry, (kind, chatId, text) =>
+        kind === "finish" ? owned.noteFinishTask(chatId, text) : owned.noteReply(chatId, text),
+      (agent) => chatForAgent(agent));
+      logger.info("[wps-bot] finish_task/reply 通道工具已注册");
+    } else {
+      logger.warn("[wps-bot] tools 服务未挂载——finish_task/reply 缺位");
+    }
+
     eventClient = factory({ appId: clientId, appSecret: clientSecret, dispatcher });
     // 观测锚点必须先行：open-event-sdk 1.0.1 的 start() 在连接存活期间不 resolve——
     // 放 await 后 = 永不打印，stop 时反补一条假信号（二度报告 §三.8 实证）。
@@ -458,6 +472,31 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
       await Promise.allSettled(disposals);
     };
   }, "wps-bot.serve");
+}
+
+/** P-A:finish_task/reply 的注册面（defineTool 形构最小集——不具有也降级 warn）。 */
+function registerChannelTools(
+  registry: { register?: (tool: unknown) => void },
+  act: (kind: "finish" | "reply", chatId: string, text: string) => Promise<void> | void,
+  chatForAgentFn: (agent: unknown) => string | null,
+): void {
+  const defineTool = (opts: Record<string, unknown>) => opts;
+  const make = (kind: "finish" | "reply", name: string, description: string) =>
+    defineTool({
+      name,
+      description,
+      parameters: {
+        text: { type: "string", required: true, description: "要发给对话的文本。" },
+      },
+      async execute(args: { text: string }, exec: { agent?: unknown }) {
+        const chatId = chatForAgentFn(exec?.agent);
+        if (chatId === null) throw new Error(`${name}: 租户无从落聊`);
+        await act(kind, chatId, args.text);
+        return { delivered: true };
+      },
+    });
+  registry.register?.(make("reply", "reply", "中途回复对话——立即发送，会话继续。今日已说话须本工具；结束须 finish_task。"));
+  registry.register?.(make("finish", "finish_task", "任务完成——登记最终交付文本，随后由通道在轮末交付。必须以此结束任务。"));
 }
 
 export { approvalQuestion, ACK_APPROVED, ACK_DECLINED, ACK_TIMEOUT, WpsBotCore } from "./bot.ts";

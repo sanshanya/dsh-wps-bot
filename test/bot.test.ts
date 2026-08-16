@@ -972,3 +972,37 @@ test("error→runtime_failure：崩溃轮种走「处理期间发生运行时异
   await SLEEP(20);
   assert.ok(client.splits.some((m) => m.text.includes("处理期间发生运行时异常")));
 });
+
+test("P-A：finish_task 登记优先交付；reply 过的 turn 不重复发末态；宽松回落保留", async (t) => {
+  const rig = makeRig();
+  t.after(async () => { await rig.core.shutdown(); await rig.cleanup(); });
+  const { core, handle, client } = rig;
+  await core.handleIncomingEvent(ev({ isPrivate: true, chatType: "p2p" }));
+
+  // 1) finish_task 登记物优先（模型末态文本不喧宾）
+  core.noteFinishTask("c1", "显式交付件");
+  core.handleSessionEvent("sess:c1", { type: "assistant/message", data: { turn: 1, step: 1, message: { content: [{ type: "text", text: "思维内噪音" }] } } });
+  handle.running = false;
+  core.handleSessionEvent("sess:c1", { type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } });
+  await SLEEP(60);
+  assert.ok(client.splits.some((m) => m.text.includes("显式交付件")));
+  assert.ok(!client.splits.some((m) => m.text.includes("思维内噪音")));
+
+  // 2) reply 过的 turn 末态文本不发
+  client.splits.length = 0;
+  core.handleSessionEvent("sess:c1", { type: "turn/start", data: { turn: 2 } });
+  await core.noteReply("c1", "中途说一句");
+  core.handleSessionEvent("sess:c1", { type: "assistant/message", data: { turn: 2, step: 1, message: { content: [{ type: "text", text: "不应重发" }] } } });
+  core.handleSessionEvent("sess:c1", { type: "turn/end", data: { turn: 2, reason: { kind: "completed" } } });
+  await SLEEP(20);
+  assert.ok(client.splits.some((m) => m.text.includes("中途说一句")));
+  assert.ok(!client.splits.some((m) => m.text.includes("不应重发")));
+
+  // 3) 宽松回落：无 finish 无 reply → 末态文本照发（默认模式防静默）
+  client.splits.length = 0;
+  core.handleSessionEvent("sess:c1", { type: "turn/start", data: { turn: 3 } });
+  core.handleSessionEvent("sess:c1", { type: "assistant/message", data: { turn: 3, step: 1, message: { content: [{ type: "text", text: "回落文本" }] } } });
+  core.handleSessionEvent("sess:c1", { type: "turn/end", data: { turn: 3, reason: { kind: "completed" } } });
+  await SLEEP(60);
+  assert.ok(client.splits.some((m) => m.text.includes("回落文本")));
+});
