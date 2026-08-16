@@ -21,6 +21,7 @@ import { EvidenceStore } from "./evidence.ts";
 import { QuoteRegistry } from "./quote-registry.ts";
 import { parseTaskKey } from "./task-keys.ts";
 import { HistoryStore } from "./history.ts";
+import { TaskQuestionsService } from "./task-questions.ts";
 import type { EventDedup } from "./dedup.ts";
 import type { WpsEvent } from "./protocol.ts";
 import { WpsRouter, type ChatSessionHandle, type Route } from "./dispatch.ts";
@@ -128,13 +129,6 @@ export function allowsWindowForReason(reason: string | undefined): boolean {
   return !reason.startsWith("[gate-source=fail_closed]");
 }
 
-interface PendingQuestion {
-  userId: string;
-  messageIds: string[];
-  resolve: (text: string) => void;
-  cancel: (error: Error) => void;
-}
-
 function withTriple(entry: import("./audit.ts").ApprovalAuditEntry, sessionId: string, owner: { userId: string } | undefined, requester: { userId: string }): void {
   entry.sessionId = sessionId;
   entry.ownerUserId = owner?.userId ?? requester.userId;
@@ -167,7 +161,7 @@ export class WpsBotCore {
   private history!: HistoryStore;
   private readonly windows = new ApprovalWindowStore();
   private readonly pendings = new Map<string, PendingApproval>();
-  private readonly pendingQuestions = new Map<string, PendingQuestion>();
+  private readonly questions: TaskQuestionsService;
   private readonly interruptionLedger = new InterruptionLedger();
   private evidenceStore: EvidenceStore | null = null;
   private quoteRegistryStore: QuoteRegistry | null = null;
@@ -251,6 +245,12 @@ export class WpsBotCore {
       logger: { warn: (...args: unknown[]) => this.logger.warn(...args) },
     });
     this.history = new HistoryStore(this.cfg.workspaceRoot);
+    this.questions = new TaskQuestionsService({
+      client: opts.client,
+      sessions: opts.sessions,
+      chatForAgent: opts.chatForAgent,
+      logger: opts.logger,
+    });
   }
 
   /** P0-2/P-C：启动期载入持久注册面——引用继承必须跨重启成立。 */
@@ -281,16 +281,9 @@ export class WpsBotCore {
       }
     }
     // user-questions 答允面：quote 命中在期问题 → 消费作答，不进任务路由
-    for (const [sessionId, question] of this.pendingQuestions) {
-      if (!sameChat(sessionId) || question.userId !== ev.senderId || !question.messageIds.includes(ev.quoteMsgId)) continue;
-      try {
-        question.resolve(ev.text.trim());
-        await this.router.recordAcceptance(ev.eventId);
-        return "approval-reply";
-      } catch (error) {
-        this.router.releaseAcceptance(ev.eventId);
-        throw error;
-      }
+    if (await this.questions.consume(ev, sameChat)) {
+      await this.router.recordAcceptance(ev.eventId).then(() => undefined, (error) => { this.router.releaseAcceptance(ev.eventId); throw error; });
+      return "approval-reply";
     }
     // GA app.py:339：run 前 eager materialize——附件落盘先于分发/排队/注入
     // 二度报告 §五：materialize 抛错必须 release——否则 event_id 永远 in-flight（dedup 死位）
@@ -411,72 +404,8 @@ export class WpsBotCore {
    * user-questions 通道代答（R6/P-B）：问件 markdown 群发 + quote 绑定答允。
    * 与审批同纪律：单槽/定时器身份自检/取消即拒；差别：无 audit、无同意语法——纯文本消费。
    */
-  async askUserQuestion(request: {
-    questions: Array<{ id: string; question: string; detail?: string; header?: string; options?: Array<{ label: string }> }>;
-    agent?: unknown;
-    signal?: { aborted: boolean; addEventListener?: (evt: string, cb: () => void) => void };
-  }): Promise<{ answers: Array<{ id: string; selected: string[]; custom?: string }> }> {
-    const agentLike = request.agent as { session?: { id?: unknown } } | undefined;
-    const sessionId = String(agentLike?.session?.id ?? "");
-    const parsedKey = parseTaskKey(sessionId);
-    const chatId = parsedKey !== null ? parsedKey.chatId : this.chatForAgentFn(request.agent);
-    if (chatId === null) {
-      const e = new Error("wps-bot: 无从落聊的租答请求");
-      (e as { code?: string }).code = "NO_CHAT_BINDING";
-      throw e;
-    }
-    const requester = this.sessions.getRequester(chatId);
-    const parts: string[] = ["## 需要你的回答"];
-    request.questions.forEach((q, index) => {
-      parts.push(`**${q.header ?? `问题 ${index + 1}/${request.questions.length}`}**\n\n${q.question}`);
-      if (q.detail) parts.push(q.detail);
-      if (q.options !== undefined && q.options.length > 0) {
-        parts.push(q.options.map((option, i) => `${i + 1}) ${option.label}`).join("  "));
-      }
-    });
-    parts.push("回复本条（引用）+ 你的答案：序号/选项名/自由文本均可。");
-    const mention =
-      requester === undefined
-        ? null
-        : await this.client.resolveMention(requester.userId, requester.name).catch(() => null);
-    const messageIds = await this.client.sendMarkdownSplit(chatId, parts.join("\n\n"), mention);
-
-    const text = await new Promise<string>((resolve, reject) => {
-      const selfDelete = (entry: PendingQuestion) => {
-        if (this.pendingQuestions.get(chatId) === entry) this.pendingQuestions.delete(chatId);
-      };
-      const entry: PendingQuestion = {
-        userId: requester?.userId ?? "",
-        messageIds,
-        resolve: (answer) => {
-          if ((entry as { settled?: boolean }).settled === true) return;
-          (entry as { settled?: boolean }).settled = true;
-          selfDelete(entry);
-          resolve(answer);
-        },
-        cancel: (reason) => {
-          if ((entry as { settled?: boolean }).settled === true) return;
-          (entry as { settled?: boolean }).settled = true;
-          selfDelete(entry);
-          reject(reason);
-        },
-      };
-      if (requester === undefined) { entry.cancel(new Error("wps-bot: 无从知位相相者")); return; }
-      this.pendingQuestions.set(chatId, entry);
-      request.signal?.addEventListener?.("abort", () => {
-        const e = new Error("wps-bot: 租答请求遭中止");
-        (e as { code?: string }).code = "ASK_ABORTED";
-        entry.cancel(e);
-      });
-    });
-
-    return {
-      answers: request.questions.map((q, index) => {
-        const hit = q.options?.find((o, i) => text === String(i + 1) || text === o.label);
-        if (index !== 0) return { id: q.id, selected: [] as string[] };
-        return hit !== undefined ? { id: q.id, selected: [hit.label] } : { id: q.id, selected: [] as string[], custom: text };
-      }),
-    };
+  askUserQuestion(request: Parameters<TaskQuestionsService["ask"]>[0]): ReturnType<TaskQuestionsService["ask"]> {
+    return this.questions.ask(request);
   }
 
   /** 审批 answerer（prepend waterfall；GA approval.py:86+ 矩阵） */
@@ -761,10 +690,7 @@ export class WpsBotCore {
       for (const chatId of [...this.pendings.keys()]) {
         this.cancelPending(chatId);
       }
-      for (const [chatId, question] of [...this.pendingQuestions]) {
-        question.cancel(Object.assign(new Error("wps-bot: 服务已关闭或正在重启"), { code: "ASK_ABORTED" }));
-        this.pendingQuestions.delete(chatId);
-      }
+      this.questions.cancelAll(Object.assign(new Error("wps-bot: 服务已关闭或正在重启"), { code: "ASK_ABORTED" }));
       await this.cards.finishAll(detailFor("service_stopping")).catch(() => undefined);
     })();
     await Promise.race([work, new Promise((r) => setTimeout(r, deadlineMs))]);
