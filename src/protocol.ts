@@ -370,37 +370,41 @@ export function mentionMatched(
   for (const m of mentions) {
     const id = m?.identity;
     if (!id) continue;
-    if (id.type === "all") return { matched: true, matchedBy: "mentions" };
+    // @所有人 不唤醒（b3 留给我方的设计判决：守 GA 语义，@all 不算 @bot）
+    if (id.type === "all") continue;
     if (id.type === "sp" || id.type === "app") {
       for (const key of [String(id.id ?? ""), String(id.app_id ?? "")]) {
         if (key.length > 0 && botIds.includes(key)) return { matched: true, matchedBy: "mentions" };
       }
     }
   }
-  // B 通道：text 中的 <at id="N">botDisplayName</at> 字面兜底
+  // B 通道：text 中的 <at id="N">botDisplayName</at> **结构匹配**兜底
+  // （二度报告 §五：旧的「includes(<at)+includes(name)」双子串在名与 tag 分置时误判）
   if (botDisplayName) {
+    const structural = new RegExp(`<at\\s+id="?\\d+"?>\\s*${escapeRegExp(botDisplayName)}\\s*</at>`);
     const content = isRecord(message.content) ? (message.content as Record<string, unknown>) : {};
     const [body] = textValue(content.text);
-    if (body.toLowerCase().includes("<at") &&
-        body.toLowerCase().includes(`<at`) &&
-        body.toLowerCase().includes(botDisplayName.toLowerCase())) {
+    if (structural.test(body)) {
       return { matched: true, matchedBy: "markup" };
     }
-    // 或者在内容 rich_text 文本块中
     const rich = flattenRichElements(content);
     for (const item of rich) {
       if (!isRecord(item)) continue;
       const source = [(item as Record<string, unknown>).text_content, (item as Record<string, unknown>).style_text_content];
-      for (const s of source) {
-        if (!isRecord(s)) continue;
-        const [text, ok] = textValue(s);
-        if (ok && text.toLowerCase().includes(botDisplayName.toLowerCase()) && text.includes("<at")) {
+      for (const s0 of source) {
+        if (!isRecord(s0)) continue;
+        const [text, ok] = textValue(s0);
+        if (ok && structural.test(text)) {
           return { matched: true, matchedBy: "markup" };
         }
       }
     }
   }
   return { matched: false, matchedBy: null };
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 /** kso.app_chat.message.create → canonical WpsEvent（GA protocol.py 的字段面 vs wpbdocs 的真值） */

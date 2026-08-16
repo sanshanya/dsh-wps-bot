@@ -7,6 +7,8 @@
  * @module dsh-wps-bot
  */
 
+import { isAbsolute } from "node:path";
+
 import { Client as WpsEventClient, Dispatcher, LogLevel } from "open-event-sdk";
 
 import type { Context } from "@deepseek-ai/cordis";
@@ -138,8 +140,9 @@ export async function createOrResume(
         resumeSessionId: args.sessionId,
         agentOptions: args.agentOptions,
       });
-    } catch {
-      /* 持久线空或同 id 拒绝 → 走 create */
+    } catch (error) {
+      // 二度报告 §五：resume 失败全吞=排障信息丢失——warn 留痕后继走 create
+      console.warn("[wps-bot] resume 失败，回落 create:", error);
     }
   }
   return agents.create({
@@ -177,6 +180,10 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
     throw new Error(
       "wps-bot: missing credentials (config.clientId / clientSecret / spId，或环境变量的 WPS365_CLIENT_ID / WPS365_CLIENT_SECRET / WPS365_SP_ID)",
     );
+  }
+  // 二度报告 §三.7：dsh session meta.cwd 必须绝对路径（ACP 同款 restrict）——boot 期硬校验好于运行期破窗
+  if (config.workspaceRoot && !isAbsolute(config.workspaceRoot)) {
+    throw new Error(`wps-bot: config.workspaceRoot 必须是绝对路径（收到: ${config.workspaceRoot}）`);
   }
   const apiBase = config.apiBase || process.env.WPS365_API_BASE || "https://openapi.wps.cn";
   const client: import("./bot.ts").BotClient =
@@ -309,9 +316,9 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
 
   // N1：payload 形状是 { agent }（runtime-types.ts:168），不能按整包做恒等比较
   void ctx.on("agent/disposed", (payload: unknown) => {
-    clearDisposedHandles(chats, payload);
-    // f2#2：router 在册句柄同步清尸（卡片收官/pending 取消在 core 内成组）
+    // 顺序钉死：core 先行（其 chatForAgent 反查依赖在册 handle），clear 殿后——反了 core 恒空转
     void core?.handleAgentDisposed(payload);
+    clearDisposedHandles(chats, payload);
   });
 
   // P0-1 生死线：turn/end 在 setPhase(idle) 前发射（agent-loop agent.ts:216-223 vs 316-322）——
@@ -324,7 +331,17 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
 
   void ctx.on("session/event", (session: AgentSessionLike, event: { type: string; data?: unknown }) => {
     if (core === null) return;
-    core.handleSessionEvent(String(session?.id ?? ""), event);
+    // 同一性双闸：对象同一直判（dispose/重建同 id 的迟到事件不污染新会话），id 字符串兜底
+    let chatId: string | null = null;
+    if (session !== undefined && session !== null) {
+      for (const [candidate, entry] of chats) {
+        if (entry.handle?.agent?.session !== undefined && entry.handle.agent.session === (session as unknown)) {
+          chatId = candidate;
+          break;
+        }
+      }
+    }
+    core.handleSessionEvent(chatId ?? String(session?.id ?? ""), event);
   });
 
   ctx.on(
@@ -402,11 +419,12 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
       logLevel: LogLevel.Info,
       reconnectMaxRetry: -1,
     });
-    await eventClient.start();
-    // 观测锚点：组合内 stdout 低音量纪律下，boot 成败只此一条 info
+    // 观测锚点必须先行：open-event-sdk 1.0.1 的 start() 在连接存活期间不 resolve——
+    // 放 await 后 = 永不打印，stop 时反补一条假信号（二度报告 §三.8 实证）。
     logger.info(
       `[wps-bot] listening (approvalMode=${String(config.approvalMode)}, cardMode=${String(config.cardMode)}, botDisplayName=${config.botDisplayName})`,
     );
+    await eventClient.start();
   })();
 
   bootstrap.catch((error: unknown) => {

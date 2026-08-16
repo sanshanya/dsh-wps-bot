@@ -263,7 +263,7 @@ for (const fr of REAL_FRAMES) {
   });
 }
 
-test("mentionMatched：mentions identity=[all] 强制匹配（不减大意数组的兼容性）", () => {
+test("mentionMatched：mentions identity=[all] 不唤醒（b3 裁定：守 GA 语义，@所有人不算 @bot）", () => {
   const hit = mentionMatched(
     {
       content: { text: { content: "x" } },
@@ -272,5 +272,27 @@ test("mentionMatched：mentions identity=[all] 强制匹配（不减大意数组
     BOT_IDS,
     "甘小雨",
   );
-  assert.equal(hit.matched, true);
+  assert.equal(hit.matched, false);
+});
+
+test("mentionMatched：B 通道结构匹配——名与 <at> 分置不误判，标准 <at>N 名</at> 才中", () => {
+  const stray = mentionMatched(
+    {
+      content: { text: { content: "刚提到<atx 标记的事，甘小雨你觉得呢" } },
+      mentions: [],
+    },
+    BOT_IDS,
+    "甘小雨",
+  );
+  assert.equal(stray.matched, false); // 旧子串面会误判
+  const structural = mentionMatched(
+    {
+      content: { text: { content: '<at id="1">甘小雨</at> 在吗' } },
+      mentions: [],
+    },
+    BOT_IDS,
+    "甘小雨",
+  );
+  assert.equal(structural.matched, true);
+  assert.equal(structural.matchedBy, "markup");
 });

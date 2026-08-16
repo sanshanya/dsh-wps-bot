@@ -227,7 +227,13 @@ export class WpsBotCore {
       }
     }
     // GA app.py:339：run 前 eager materialize——附件落盘先于分发/排队/注入
-    await this.materializeAttachments(ev);
+    // 二度报告 §五：materialize 抛错必须 release——否则 event_id 永远 in-flight（dedup 死位）
+    try {
+      await this.materializeAttachments(ev);
+    } catch (error) {
+      this.router.releaseAcceptance(ev.eventId);
+      throw error;
+    }
     return this.router.handleEvent(ev, { preClaimed: true });
   }
 
@@ -335,8 +341,8 @@ export class WpsBotCore {
         );
         return "allowed-once";
       } catch {
-        // 本插件组合通常没有第二个 answerer；这条 next() 的实际上是 'unavailable'→deny——fail-closed 正确，不是回群问
-        return next();
+        // 审计失败=fail-closed：显式 unavailable 而不是 next()（另一宽 answerer 在同组合时会抢答）
+        return "unavailable";
       }
     }
 
@@ -608,7 +614,7 @@ export class WpsBotCore {
 /** GA approval.py 的群问面提示词（Kubernetes 写作拆掉，本插件不做 K8s 特化）。 */
 export function approvalQuestion(review: string, allowWindow: boolean): string {
   const instruction = allowWindow
-    ? "回复“同意”仅执行本次；回复“同意5分钟”（分钟数可替换）开启限时自动同意。"
+    ? "回复“同意”仅执行本次；回复“同意5分钟”（分钟数可替换）开启限时自动同意——窗口对本对话中您本人发起的后续所有待确认操作生效。"
     : "本次仅支持回复“同意”执行一次，不开放限时自动同意。";
   return `**需要确认的操作**\n\n${instruction}其他回复会取消本次操作并交给模型。\n\n${review}`;
 }
