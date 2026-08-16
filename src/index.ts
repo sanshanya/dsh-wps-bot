@@ -21,7 +21,7 @@ import {
   type RawMessageEventData,
   type WpsEvent,
 } from "./protocol.ts";
-import type { ChatSessionHandle } from "./dispatch.ts";
+import type { ChatSessionHandle } from "./task-router.ts";
 import { parseTaskKey } from "./task-keys.ts";
 import { appendApprovalAudit } from "./audit.ts";
 import { defineTool as realDefineTool } from "@deepseek-ai/dsh-tools";

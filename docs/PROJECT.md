@@ -15,7 +15,7 @@ dsh-wps-bot 是 dsh（DeepSeek Harness）的 cordis 插件，把 WPS 365 事件�
 ```text
 src/index.ts    cordis 接线：WS 入站、REST 出站、agents 注册、事件/审批订阅、teardown
 src/protocol.ts wire 归一（真机帧固定钉，@bot/自答/mention/附件/quote）
-src/dispatch.ts 路由与幂等（dedup、队列、inject/排队判据）→ 将演化为 task-router
+src/task-router.ts 路由与幂等（dedup、队列、inject/排队判据）→ 将演化为 task-router
 src/bot.ts      会话总线（状态、卡片、审批面、交付、shutdown）→ 将拆 task-session/task-delivery
 src/client.ts   WPS REST（auth、消息、卡片、附件、历史上拉）
 src/{split,consent,audit,dedup,card,notify}.ts  稳定纯模块
@@ -84,6 +84,8 @@ Markdown 4500 分段（CRLF 归一/自然段/硬切 UTF-16 代理体守卫/首�
 | Phase 0.5 投递裁决 |「纯引用不@」=非@特例，抓包结论③已覆盖：**不推**。@律裁定：群内继承强制**引用并@**(07:10:20 实证秒通);非@ 内容看板=REST 补拉，不在 v0.1 范围 | ✅ 裁决落(不再探) |
 | P-A 纯增量 | finish_task（宽松默认）+reply+audit 三元组+D1 注册表模块 | ✅ c294126+6f…（工具对 registry 通道注册；P-C 时键迁移） |
 | P-B 通道代答 | user-questions 接通道（复用答允机器，模板分面） | ✅ 964db43 |
+| 拆分(§4) | god class 拆件：bot 978→574；task-approval/task-questions/task-delivery/history/channel-tools 归位；dispatch 正名 task-router | ✅ …|
+
 | P-C 分叉主体 | B 路由全键(sessionId=chat×owner×taskId/并行任务/quote 注册表消费+participants 增员)+any-of 审批+窗键 sessionKey+三元组真值+任务工作区分盘 | ✅ `4e8be7e`+`d5d3bff` |
 | P-D 历史面 | inbound 全件归档 ws/history/<chat>.jsonl+searchHistory+search_wps_history 工具+读审计行 | ✅ `6f38296` |
 | 发版闸 | RELEASE 仪式文书 | ✅ a6bea45；U1/U2 用户域欠账目 |

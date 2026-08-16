@@ -27,7 +27,7 @@ import { ACK_APPROVED, ACK_APPROVED_NO_WINDOW, ACK_DECLINED, ACK_TIMEOUT, ackApp
 import { TaskQuestionsService } from "./task-questions.ts";
 import type { EventDedup } from "./dedup.ts";
 import type { WpsEvent } from "./protocol.ts";
-import { WpsRouter, type ChatSessionHandle, type Route } from "./dispatch.ts";
+import { WpsRouter, type ChatSessionHandle, type Route } from "./task-router.ts";
 
 export interface CoreLogger {
   info(...args: unknown[]): void;

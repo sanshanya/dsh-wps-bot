@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { WpsRouter, defaultFactify, type ChatSessionHandle } from "../src/dispatch.ts";
+import { WpsRouter, defaultFactify, type ChatSessionHandle } from "../src/task-router.ts";
 import { EventDedup } from "../src/dedup.ts";
 import type { WpsEvent } from "../src/protocol.ts";
 

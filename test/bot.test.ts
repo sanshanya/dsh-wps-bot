@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { WpsBotCore, type BotClient, type BotSessions } from "../src/bot.ts";
-import type { ChatSessionHandle } from "../src/dispatch.ts";
+import type { ChatSessionHandle } from "../src/task-router.ts";
 import type { WpsEvent } from "../src/protocol.ts";
 import { EventDedup } from "../src/dedup.ts";
 

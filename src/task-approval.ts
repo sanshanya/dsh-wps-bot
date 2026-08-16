@@ -8,7 +8,7 @@ import { appendApprovalAudit, autoAllowEntry, type ApprovalAuditEntry } from "./
 import { ApprovalWindowStore, parseConsent, windowAllows } from "./consent.ts";
 import { parseTaskKey } from "./task-keys.ts";
 import type { WpsEvent } from "./protocol.ts";
-import type { WpsRouter } from "./dispatch.ts";
+import type { WpsRouter } from "./task-router.ts";
 import type { ProgressCards } from "./card.ts";
 
 export const ACK_APPROVED = "操作已批准。";
