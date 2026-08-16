@@ -56,6 +56,12 @@ if (!can) {
           return makeHandle(String(opts.resumeSessionId));
         },
       },
+      tools: {
+        register(tool: unknown) {
+          (ivi.ctxTools as unknown[]).push(tool);
+        },
+      },
+      userQuestions: { registerProvider: () => {} },
       ...overrides,
     };
     function makeHandle(sessionId: string) {
@@ -84,6 +90,7 @@ if (!can) {
       return handle;
     }
     const ivi = {
+      ctxTools: [] as unknown[],
       idev,
       handlesBySession,
       async dispose() {
@@ -233,6 +240,11 @@ if (!can) {
     assert.equal((ivi.listeners.get("agent/status") ?? []).length, 1);
     assert.equal((ivi.listeners.get("approval/request") ?? []).length, 1);
     assert.equal((ivi.listeners.get("approval/request") ?? [])[0]!.prepend, true); // prepend waterfall
+    // 评估 P0 回归断言:三通道工具真实注册(防拆件断腿)
+    const registeredToolNames = ivi.ctxTools.map((t) => (t as { name?: string }).name);
+    for (const need of ["finish_task", "reply", "search_wps_history"]) {
+      assert.ok(registeredToolNames.includes(need), `通道工具未注册: ${need} (${registeredToolNames.join(",")})`);
+    }
 
     // 2) 中间旁白——fire 真引用（与 handle.agent.session 同一对象；假引用是 E2E-1 漏测根因）
     const sessionRef = (s1.handle as { agent: { session: unknown } }).agent.session;

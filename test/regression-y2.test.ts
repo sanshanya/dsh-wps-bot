@@ -88,3 +88,23 @@ test("Y2-2：searchHistory 返回 newest-first（最近 N 条=从最新回放）
     await rm(tmpRoot, { recursive: true, force: true });
   }
 });
+
+test("Y2-extra：QuoteRegistry 并发 register 串行化——A/B 都在持久层活着(不写丢)", async () => {
+  const { QuoteRegistry } = await import("../src/quote-registry.ts");
+  const tmpRoot2 = await mkdtemp(join(tmpdir(), "y2-seq-"));
+  try {
+    const reg = new QuoteRegistry(join(tmpRoot2, "r.jsonl"));
+    await Promise.all([
+      reg.register(["a1", "a2"], "wps-bot:c1:u1:t1", "c1"),
+      reg.register(["b1"], "wps-bot:c1:u1:t2", "c1"),
+    ]);
+    assert.equal(reg.size, 3);
+    // load 重阅同文件：全量都活着
+    const reg2 = new QuoteRegistry(join(tmpRoot2, "r.jsonl"));
+    await reg2.load();
+    assert.equal(reg2.size, 3);
+    assert.ok(reg2.lookup("b1") !== null);
+  } finally {
+    await rm(tmpRoot2, { recursive: true, force: true });
+  }
+});

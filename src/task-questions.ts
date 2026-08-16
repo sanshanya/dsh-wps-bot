@@ -88,6 +88,8 @@ export class TaskQuestionsService {
         },
       };
       if (requester === undefined) { entry.cancel(new Error("wps-bot: 无从知位相相者")); return; }
+      const oldPending = this.pending.get(sessionId);
+      if (oldPending !== undefined) oldPending.cancel(Object.assign(new Error("wps-bot: 新问件覆盖了旧问相答允"), { code: "ASK_OVERRIDDEN" }));
       this.pending.set(sessionId, entry);
       request.signal?.addEventListener?.("abort", () => {
         const e = new Error("wps-bot: 租答请求遭中止");

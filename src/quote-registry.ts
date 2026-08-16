@@ -45,7 +45,16 @@ export class QuoteRegistry {
     } catch { /* 首跑无档 */ }
   }
 
+  /** per-file 串行链：并发 register 按到达序落盘（Y2 评审：读改写竞态丢登记实证链） */
+  private chain: Promise<void> = Promise.resolve();
+
   async register(botMessageIds: string[], sessionId: string, chatId: string): Promise<void> {
+    const next = this.chain.then(() => this.registerOnce(botMessageIds, sessionId, chatId));
+    this.chain = next.catch(() => undefined);
+    return next;
+  }
+
+  private async registerOnce(botMessageIds: string[], sessionId: string, chatId: string): Promise<void> {
     const sentAt = Date.now();
     for (const id of botMessageIds) {
       if (id.length === 0) continue;

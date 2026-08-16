@@ -24,7 +24,6 @@ import {
 import type { ChatSessionHandle } from "./task-router.ts";
 import { parseTaskKey, sanitizePathKey } from "./task-keys.ts";
 import { appendApprovalAudit } from "./audit.ts";
-import { defineTool as realDefineTool } from "@deepseek-ai/dsh-tools";
 import { registerChannelTools, registerHistoryTool } from "./channel-tools.ts";
 import {
   WpsBotCore,
@@ -473,6 +472,22 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
       }
     }
     // flag false（默认）=有意不注册（apiproxy 广播活在场）——静默正确
+    // P0 回归修复：通道工具接线（定义已搬 channel-tools.ts，调用未迁——发布阻断实证）
+    const toolsRegistry = (ctx as unknown as {
+      tools?: { register?: (tool: unknown) => void };
+    }).tools;
+    if (core !== null && toolsRegistry?.register !== undefined) {
+      const owed = core;
+      registerChannelTools(toolsRegistry, (kind: "finish" | "reply", chatId: string, text: string) =>
+        kind === "finish" ? owed.noteFinishTask(chatId, text) : owed.noteReply(chatId, text),
+      (agent: unknown) => chatForAgent(agent));
+      registerHistoryTool(toolsRegistry, owed, (agent: unknown) => chatForAgent(agent), (entry) =>
+        appendApprovalAudit(config.auditPath ?? "runtime/wps-bot-approval.jsonl", entry));
+      logger.info("[wps-bot] finish_task/reply/search_wps_history 通道工具已注册");
+    } else {
+      logger.warn("[wps-bot] tools 服务未挂载——finish_task/reply 缺位（组合层补挂）");
+    }
+
     eventClient = factory({ appId: clientId, appSecret: clientSecret, dispatcher });
     // 观测锚点必须先行：open-event-sdk 1.0.1 的 start() 在连接存活期间不 resolve——
     // 放 await 后 = 永不打印，stop 时反补一条假信号（二度报告 §三.8 实证）。

@@ -994,6 +994,20 @@ test("P-D：inbound 全件归档 + searchHistory 同 chat 检索（读开历史�
   // 别 chat 互相隔离
   assert.equal((await rig.core.searchHistory("c2", "巡检")).length, 0);
 });
+test("P1：reply 过的 turn 在宽松模式不得误发「无法继续完成」", async (t) => {
+  const rig = makeRig();
+  t.after(async () => { await rig.core.shutdown(); await rig.cleanup(); });
+  await rig.core.handleIncomingEvent(ev({ isPrivate: true, chatType: "p2p" }));
+  rig.handle.running = false;
+  rig.core.handleSessionEvent("sess:c1", { type: "turn/start", data: { turn: 1 } });
+  await rig.core.noteReply(rig.lastKey(), "中途说一句");
+  rig.core.handleSessionEvent("sess:c1", { type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } });
+  await new Promise((r) => setTimeout(r, 80));
+
+  // 不得发末条文本重发 也不得发 unavailable 通知
+  assert.ok(!rig.client.splits.some((m) => m.text.includes("无法继续完成")), "reply 过的 turn 误发了 unavailable");
+});
+
 test("P0-2 重启继承回归：registry 文件跨重启，旧回答引用恢复旧会话", async (t) => {
   const r1 = makeRig();
   t.after(async () => { await r1.core.shutdown(); await r1.cleanup(); });

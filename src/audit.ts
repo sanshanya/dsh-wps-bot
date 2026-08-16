@@ -13,7 +13,7 @@ export type ApprovalAuditOutcome =
   | "approval_window"
   | "cancelled";
 
-export type ApprovalAuditKind = "decision" | "window-auto-allow" | "reply-resolution";
+export type ApprovalAuditKind = "decision" | "window-auto-allow" | "reply-resolution" | "history-read";
 
 export interface ApprovalAuditEntry {
   /** epoch 秒 */

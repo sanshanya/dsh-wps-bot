@@ -1,8 +1,8 @@
 {
   "_meta": {
     "generated_by": "scripts/token-budget.mjs",
-    "generated_at": "2026-08-16T09:24:56Z",
-    "git_head": "f8277c802ebc6b8df085ab01355aa914f96ca55a",
+    "generated_at": "2026-08-16T10:00:40Z",
+    "git_head": "4fb85148caf7b7f386060fedca818d01f36046cd",
     "tokenizer": "cl100k_base (js-tiktoken)",
     "enumeration": "git ls-files -z",
     "excluded_names": [
@@ -13,10 +13,10 @@
     "ratchet": "任一 bucket 或 total 超过本基线即红；仅经 --regen 单行 commit 显式提高（GA PROJECT.md:74 口径）"
   },
   "categories": {
-    "source": 40893,
-    "tests": 33677,
-    "docs": 17390,
+    "source": 41421,
+    "tests": 35591,
+    "docs": 17522,
     "tooling": 8713
   },
-  "total": 100673
+  "total": 103247
 }

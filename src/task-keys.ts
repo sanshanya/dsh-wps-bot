@@ -39,7 +39,7 @@ export function isLegacyKey(key: string): boolean {
 /** Y2-3 央束：盘键净化——白名单 [A-Za-z0-9._-]，余者一概「_」；空/纯点键变「_」。
  *  用法：一切落盘路径段必须经此；会话键解析原件不动（运营面不受影响）。 */
 export function sanitizePathKey(key: string): string {
-  const out = key.replace(/[^A-Za-z0-9._-]+/g, "_").replace(/\.{1,}/g, (m) => (m === ".." ? "__" : m)).replace(/^[._]+|[._]+$/g, (m) => (m.length > 2 ? m : m));
+  const out = key.replace(/[^A-Za-z0-9._-]+/g, "_");
   const cleaned = out.length > 0 && out !== "." && out !== ".." ? out : "_";
   return cleaned;
 }

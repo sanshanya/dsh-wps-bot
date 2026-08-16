@@ -56,7 +56,7 @@ export function registerHistoryTool(
         .slice(0, Math.min(20, Math.max(1, args.limit ?? 5)));
       await auditAppend({
         timestamp: Math.floor(Date.now() / 1000),
-        kind: "decision",
+        kind: "history-read",
         auditOutcome: "decision",
         chatId: targetChat,
         userId: (sessionId !== null ? (parseTaskKey(sessionId)?.ownerId ?? sessionId) : chatId),

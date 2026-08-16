@@ -414,6 +414,9 @@ export class WpsBotCore {
             // 严格完结：无 finish_task 不落交付——显式通告（审计面外发）
             this.turnFinalText.delete(chatId);
             void this.notifyInterrupted(chatId, "unavailable", `${chatId}:${turnNo}:strict-finish-per-contract`);
+          } else if (this.repliedTurn.get(chatId) === (this.currentTurn.get(chatId) ?? 0)) {
+            // reply 已交：宽松模式不再补发结束通告（interruptionNotice 属未交付语义）
+            this.turnFinalText.delete(chatId);
           } else if (finalText !== undefined && finalText.length > 0) {
             this.turnFinalText.delete(chatId);
             // B4：交付结果回填卡片真值——收官延后到 deliver 落地（真值到时才可见）

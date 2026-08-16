@@ -104,8 +104,10 @@ export class TaskDeliveryService {
         }
         try {
           const uploadSent = await this.client.uploadFile(chatId, name, await readFile(candidate));
-          const uploadIds = (uploadSent as { messageId?: unknown }).messageId;
-          this.registerOutboundIds(sessionId, chatId, typeof uploadIds === "string" && uploadIds !== "" ? [uploadIds] : []);
+          // /v7/messages/create 响件 {data:{message_id}} —— 深度取（评估：旧层直接找 .messageId 恒空）
+          const uploadData = (uploadSent as { data?: { message_id?: unknown } }).data;
+          const uploadId = uploadData?.message_id !== undefined ? String(uploadData.message_id) : "";
+          this.registerOutboundIds(sessionId, chatId, uploadId !== "" ? [uploadId] : []);
         } catch (error) {
           deliveryErrors.push(`Artifact delivery failed for ${name}: ${String(error)}`);
         }
