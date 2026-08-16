@@ -45,3 +45,9 @@
 1. loader `unwrapExports` default 遮蔽 inject（b64ba80→修复）；
 2. WS 单播律：多连接=随机丢消息（04:10 事故；答允帧被侧车吃掉、重发任务被当答允拒）——**生产同 SP 同时只允许一条入站连接**；
 3. 答允幂等：迟来答复副本不得双发 ack/audit（`1eaa6d8` settled guard）。
+
+## 附录：首帧抓包时间戳级存证（2026-08-15 实跑，唯一存证位）
+
+- 16:41:58.772Z（WS 下发）→ 16:41.470Z 本地收到：@bot 群消息 `mentions[].id=="1"`（下标串），真命中 `mentions[].identity.id == spId`；展示名 `甘小雨` 走 `<at id="N">…</at>` 字面兜底。
+- 16:42:02.138Z / 16:42:12.226Z：两条**不带 @** 的 image/file 帧——SDK Debug 面无 `Received event`（服务端未推），REST 历史可见 → **WS 群聊只推 @bot**。
+- bot 自发：`sender.type=="sp"`、`sender.id==spId`（卡片自发 content 为 null）。
