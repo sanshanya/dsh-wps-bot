@@ -61,6 +61,7 @@ export interface WpsBotConfig {
   allowWindow?: boolean;
   auditPath?: string;
   ackInterventionText?: string;
+  shutdownDeadlineSeconds?: number;
   deliverChunks?: number;
 }
 
@@ -87,6 +88,8 @@ export const Config: Schema<WpsBotConfig> = Schema.object({
   allowWindow: Schema.boolean().default(true),
   auditPath: Schema.string().default("runtime/wps-bot-approval.jsonl"),
   ackInterventionText: Schema.string().default(ACK_INTERVENTION_TEXT),
+  /** shutdown 总预算秒（GA GA_WPS_SHUTDOWN_TIMEOUT_SECONDS:43 对位；r3-γ 裁决 (b) 真配）。 */
+  shutdownDeadlineSeconds: Schema.number().default(10),
   deliverChunks: Schema.number().default(4500),
 });
 
@@ -308,6 +311,7 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
         deliverChunks: Math.max(1, config.deliverChunks ?? 4500), // F7：<=0 会让 splitMarkdown 死循环
         // workspaceRoot 与 agents.create 的 cwd 同源：downloads/artifacts 都在会话工作区下
         workspaceRoot: config.workspaceRoot || process.cwd(),
+        shutdownDeadlineMs: (config.shutdownDeadlineSeconds ?? 10) * 1000,
       },
     };
     return new WpsBotCore(opts);
