@@ -894,3 +894,19 @@ test("G4：shutdown 封路拒新 + 在跑会话收到 service_stopping（幂等�
   const route = await core.handleIncomingEvent(ev({ isPrivate: true, chatType: "p2p", text: "再来" }));
   assert.equal(route, "duplicate");
 });
+
+test("审批串行：同 chat 两问不同时飞——第二问进群问队列（单槽）", async (t) => {
+  const rig = makeRig({ approvalTimeoutMs: 120 });
+  t.after(async () => { await rig.core.shutdown(); await rig.cleanup(); });
+  const { core, client } = rig;
+  await core.handleIncomingEvent(ev({ isPrivate: true, chatType: "p2p" }));
+  const p1 = core.handleApprovalRequest({ agent: "agent:c1", reason: "第一问", toolName: "pwsh", callId: "k1" }, async () => "unavailable" as const);
+  const p2 = core.handleApprovalRequest({ agent: "agent:c1", reason: "第二问", toolName: "pwsh", callId: "k2" }, async () => "unavailable" as const);
+  await new Promise((r) => setTimeout(r, 30));
+  // 只飞了第一问
+  const questions = () => client.splits.filter((m) => m.text.includes("需要确认的操作")).length;
+  assert.equal(questions(), 1);
+  await Promise.all([p1, p2]); // 120ms 超时依次放行
+  const after = questions();
+  assert.ok(after >= 1); // 第二问可能已超时回执，但两问曾串行（第一问结束后才发第二问）
+});

@@ -80,8 +80,9 @@ export class WpsRouter {
     try {
       const route = await this.route(ev);
       if (route !== "drop") {
-        accepted = true;
+        // E2：record 失败不得标 accepted——finally successful release，回放重试优于静默丢幂等位
         await this.opts.dedup.record(ev.eventId);
+        accepted = true;
       }
       return route;
     } finally {

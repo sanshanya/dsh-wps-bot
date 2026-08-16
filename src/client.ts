@@ -431,12 +431,18 @@ export class WpsClient {
     mention?: Mention | null,
     limit = 4500,
   ): Promise<string[]> {
-    const parts = splitMarkdown(markdown, limit);
+    const tag = mention ? `${mention.atTag(1)}\n\n` : "";
+    // 首段 mention 预留额度：tag 前缀计入 limit——超额尾部挪作新的第二段（其长 ≤ tag.length < limit）
+    let parts = splitMarkdown(markdown, limit);
+    if (tag !== "" && parts.length > 0 && (parts[0] as string).length + tag.length > limit) {
+      const room = Math.max(1, limit - tag.length);
+      parts = [(parts[0] as string).slice(0, room), (parts[0] as string).slice(room), ...parts.slice(1)];
+    }
     const ids: string[] = [];
     for (let index = 0; index < parts.length; index++) {
       let part = parts[index] as string;
       const first = index === 0 && mention;
-      if (first && mention) part = `${mention.atTag(1)}\n\n${part}`;
+      if (first && mention) part = `${tag}${part}`;
       const response = await this.sendMarkdown(chatId, part, first && mention ? [mention] : undefined);
       try {
         ids.push(messageId(response, "send message"));

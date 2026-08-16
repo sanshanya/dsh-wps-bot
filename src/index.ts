@@ -168,6 +168,7 @@ export function clearDisposedHandles(
 export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}): void {
   const ctx: any = rawCtx;
   const logger = ctx.logger ?? console;
+  const ctxLogger = typeof ctx.logger === "function" ? ctx.logger("wps-bot") : logger;
 
   const clientId = config.clientId || process.env.WPS365_CLIENT_ID || "";
   const clientSecret = config.clientSecret || process.env.WPS365_CLIENT_SECRET || "";
@@ -384,7 +385,14 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
           appId: opts.appId,
           appSecret: opts.appSecret,
           dispatcher: opts.dispatcher as any,
-          logLevel: LogLevel.Info,
+          // SDK 直写 stdout 违反组合纪律（stdout 只许 JSON-RPC 帧）——接进 cordis logger，默认 Error
+          logger: {
+            debug: (...a: unknown[]) => ctxLogger.debug(...a),
+            info: (...a: unknown[]) => ctxLogger.info(...a),
+            warn: (...a: unknown[]) => ctxLogger.warn(...a),
+            error: (...a: unknown[]) => ctxLogger.error(...a),
+          } as never,
+          logLevel: LogLevel.Error,
           reconnectMaxRetry: -1,
         }));
     eventClient = factory({
@@ -408,16 +416,17 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
   ctx.effect(() => {
     void bootstrap.catch(() => undefined);
     return async () => {
-      await core?.shutdown().catch(() => undefined);
-      const disposals = [...chats.values()]
-        .filter((entry) => entry.handle !== undefined)
-        .map((entry) => (entry.handle as AgentHandleLike).dispose());
-      await Promise.allSettled(disposals);
+      // 清理序：先断入站（stop）→ 再收业务（shutdown）→ 最后 agent dispose
       try {
         eventClient?.stop(); // SDK 1.0.1 stop(): void（无 await）
       } catch {
         /* 静默 */
       }
+      await core?.shutdown().catch(() => undefined);
+      const disposals = [...chats.values()]
+        .filter((entry) => entry.handle !== undefined)
+        .map((entry) => (entry.handle as AgentHandleLike).dispose());
+      await Promise.allSettled(disposals);
     };
   }, "wps-bot.serve");
 }

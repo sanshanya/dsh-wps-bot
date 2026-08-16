@@ -255,3 +255,19 @@ test("client.uploadFile file 分支 + 缺 upload_entry → invalid_response", as
   });
   await assert.rejects(missing.uploadFile("c1", "x.bin", data), /missing upload entry/);
 });
+
+test("client.sendMarkdownSplit：首段 mention 预留额度（tag 计入 limit，溢出挪段）", async () => {
+  const { client, calls } = makeClient({
+    "POST https://openapi.wps.cn/v7/messages/create": { body: { ok: true, data: { message_id: "m-1" } } },
+  });
+  (client as unknown as { providedAccessToken: string }).providedAccessToken = "tok";
+  const body = "x".repeat(100);
+  const mention = { userId: "u1", companyId: "c", displayName: "张三", atTag: (i: number) => `<at id="${i}">张三</at>`, payload: () => ({}) };
+  // limit=110：tag(20)+100x > 110 → 首段挪 10x 到第二段
+  const ids = await client.sendMarkdownSplit("chat-1", body, mention as never, 110);
+  assert.equal(ids.length, 2);
+  const first = JSON.parse(calls[0]!.body) as { content: { text: { content: string } } };
+  const firstText = first.content.text.content;
+  assert.ok(firstText.startsWith("<at id=\"1\">张三</at>"));
+  assert.ok(firstText.length <= 110);
+});

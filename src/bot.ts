@@ -285,8 +285,29 @@ export class WpsBotCore {
     return { cleaned: text.replace(ATTACH_MARKER, "").trim(), files, errors };
   }
 
+  /** 并发审批串行链：同 chat 同时刻至多只挂一只群问（P1 单槽覆盖改案）。 */
+  private readonly approvalByChat = new Map<string, Promise<unknown>>();
+
   /** 审批 answerer（prepend waterfall；GA approval.py:86+ 矩阵） */
   async handleApprovalRequest(
+    req: ApprovalRequestLike,
+    next: () => Promise<ApprovalOutcome>,
+  ): Promise<ApprovalOutcome> {
+    const chainChatId = this.chatForAgentFn(req.agent);
+    if (chainChatId !== null) {
+      const prev = this.approvalByChat.get(chainChatId) ?? Promise.resolve();
+      const current = prev.catch(() => undefined).then(() => this.handleApprovalRequestInner(req, next));
+      this.approvalByChat.set(chainChatId, current);
+      try {
+        return await current;
+      } finally {
+        if (this.approvalByChat.get(chainChatId) === current) this.approvalByChat.delete(chainChatId);
+      }
+    }
+    return this.handleApprovalRequestInner(req, next);
+  }
+
+  private async handleApprovalRequestInner(
     req: ApprovalRequestLike,
     next: () => Promise<ApprovalOutcome>,
   ): Promise<ApprovalOutcome> {
@@ -539,20 +560,25 @@ export class WpsBotCore {
     signal?: { aborted: boolean; addEventListener?: (evt: string, cb: () => void) => void },
   ): Promise<ReplyEvent> {
     return new Promise((resolve) => {
-      const timer = setTimeout(() => {
-        this.pendings.delete(chatId);
-        resolve({ kind: "timeout" });
-      }, this.cfg.approvalTimeoutMs);
+      // b3 身份自检：delete 前核对在册条目仍是「我」——老 timer 不得误删新 pending
+      const selfDelete = (entry: PendingApproval) => {
+        if (this.pendings.get(chatId) === entry) this.pendings.delete(chatId);
+      };
       const entry: PendingApproval = {
         userId,
         resolve: (reply) => {
           clearTimeout(timer);
           if (entry.abortHook) entry.abortHook();
-          this.pendings.delete(chatId);
+          selfDelete(entry);
           resolve(reply);
         },
-        timer,
+        timer: undefined as unknown as NodeJS.Timeout,
       };
+      const timer = setTimeout(() => {
+        selfDelete(entry);
+        resolve({ kind: "timeout" });
+      }, this.cfg.approvalTimeoutMs);
+      entry.timer = timer;
       entry.abortHook = undefined;
       if (signal?.aborted) {
         resolve({ kind: "cancelled" });
