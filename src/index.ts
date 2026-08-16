@@ -22,6 +22,7 @@ import {
   type WpsEvent,
 } from "./protocol.ts";
 import type { ChatSessionHandle } from "./dispatch.ts";
+import { parseTaskKey } from "./task-keys.ts";
 import {
   WpsBotCore,
   type CoreBotOptions,
