@@ -21,6 +21,8 @@ import { EvidenceStore } from "./evidence.ts";
 import { QuoteRegistry } from "./quote-registry.ts";
 import { parseTaskKey } from "./task-keys.ts";
 import { HistoryStore } from "./history.ts";
+import { TaskApprovalService } from "./task-approval.ts";
+import { ACK_APPROVED, ACK_APPROVED_NO_WINDOW, ACK_DECLINED, ACK_TIMEOUT, ackApprovedWindow, allowsWindowForReason, type ReplyEvent } from "./task-approval.ts";
 import { TaskQuestionsService } from "./task-questions.ts";
 import type { EventDedup } from "./dedup.ts";
 import type { WpsEvent } from "./protocol.ts";
@@ -65,13 +67,7 @@ function safeArtifactName(name: string): string {
     .slice(0, 160);
 }
 
-export const ACK_APPROVED = "操作已批准。";
-export const ACK_APPROVED_NO_WINDOW = "操作已批准，但本次未开启自动同意窗口。";
-export const ACK_DECLINED = "操作已取消，意见将交给模型继续处理。";
-export const ACK_TIMEOUT = "审批超时未获答复，本次操作已取消。";
-export function ackApprovedWindow(n: number): string {
-  return `操作已批准，并开启 ${n} 分钟自动同意窗口。`;
-}
+export { ACK_APPROVED, ACK_APPROVED_NO_WINDOW, ACK_DECLINED, ACK_TIMEOUT, ackApprovedWindow } from "./task-approval.ts";
 
 export interface ApprovalRequestLike {
   agent?: unknown;
@@ -82,10 +78,7 @@ export interface ApprovalRequestLike {
 }
 export type ApprovalOutcome = "allowed-once" | "rejected" | "cancelled" | "unavailable";
 
-export type ReplyEvent =
-  | { kind: "reply"; text: string; userId?: string }
-  | { kind: "timeout" }
-  | { kind: "cancelled" };
+export type { ReplyEvent } from "./task-approval.ts";
 
 export interface AgentSessionLike {
   id?: string;
@@ -124,29 +117,9 @@ export interface CoreBotOptions {
 }
 
 /** GA ga_handler.py:146：reason 前缀 [gate-source=fail_closed] 一律不开窗。 */
-export function allowsWindowForReason(reason: string | undefined): boolean {
-  if (typeof reason !== "string") return true;
-  return !reason.startsWith("[gate-source=fail_closed]");
-}
+export { allowsWindowForReason } from "./task-approval.ts";
 
-function withTriple(entry: import("./audit.ts").ApprovalAuditEntry, sessionId: string, owner: { userId: string } | undefined, requester: { userId: string }): void {
-  entry.sessionId = sessionId;
-  entry.ownerUserId = owner?.userId ?? requester.userId;
-  entry.requesterUserId = requester.userId;
-}
-function withFields(entry: import("./audit.ts").ApprovalAuditEntry, sessionId: string, owner: { userId: string } | undefined, requester: { userId: string }, approver: string): void {
-  withTriple(entry, sessionId, owner, requester);
-  entry.approverUserId = approver;
-}
 
-interface PendingApproval {
-  /** any-of 允集：owner∪participants；消费时 resolvedBy 记实人。 */
-  userIds: Set<string>;
-  resolvedBy?: string;
-  resolve: (reply: ReplyEvent) => void;
-  timer: NodeJS.Timeout;
-  abortHook?: (() => void) | undefined;
-}
 
 export class WpsBotCore {
   private readonly client: BotClient;
@@ -158,9 +131,13 @@ export class WpsBotCore {
 
   readonly router: WpsRouter;
   readonly cards: ProgressCards;
+  /** 当轮最高一个含 text 的 assistant 消息正文（GA terminal response 的最后一条）。 */
+  private readonly turnFinalText = new Map<string, string>();
+  /** F4：同 chatId 的 ensure 单飞：两条并发 direct 并发只建一份会话句柄。 */
+  private readonly pendingEnsures = new Map<string, Promise<ChatSessionHandle>>();
+  private readonly approvals: TaskApprovalService;
   private history!: HistoryStore;
   private readonly windows = new ApprovalWindowStore();
-  private readonly pendings = new Map<string, PendingApproval>();
   private readonly questions: TaskQuestionsService;
   private readonly interruptionLedger = new InterruptionLedger();
   private evidenceStore: EvidenceStore | null = null;
@@ -244,6 +221,18 @@ export class WpsBotCore {
       },
       logger: { warn: (...args: unknown[]) => this.logger.warn(...args) },
     });
+    this.approvals = new TaskApprovalService({
+      approvalMode: this.cfg.approvalMode,
+      approvalTimeoutMs: this.cfg.approvalTimeoutMs,
+      allowWindow: this.cfg.allowWindow,
+      auditPath: this.cfg.auditPath,
+      client: opts.client,
+      router: this.router,
+      sessions: opts.sessions,
+      cards: this.cards,
+      chatForAgent: opts.chatForAgent,
+      logger: opts.logger,
+    });
     this.history = new HistoryStore(this.cfg.workspaceRoot);
     this.questions = new TaskQuestionsService({
       client: opts.client,
@@ -268,17 +257,15 @@ export class WpsBotCore {
     void this.history.record(ev).catch((error) => this.logger.warn("[wps-bot] history 落盘失败:", error));
     // 审批答允（any-of）：pending 允集(owner∪participants)含发送者且同 chat → 原子消费
     const sameChat = (sessionId: string) => (parseTaskKey(sessionId)?.chatId ?? sessionId) === ev.chatId;
-    for (const [sessionId, pend] of this.pendings) {
-      if (!sameChat(sessionId) || !pend.userIds.has(ev.senderId)) continue;
-      pend.resolvedBy = ev.senderId;
-      try {
-        pend.resolve({ kind: "reply", text: ev.text.trim(), userId: ev.senderId });
-        await this.router.recordAcceptance(ev.eventId);
-        return "approval-reply";
-      } catch (error) {
-        this.router.releaseAcceptance(ev.eventId);
-        throw error;
-      }
+    if (this.approvals.tryConsume(ev, sameChat) !== null) {
+      await this.router.recordAcceptance(ev.eventId).then(
+        () => undefined,
+        (error) => {
+          this.router.releaseAcceptance(ev.eventId);
+          throw error;
+        },
+      );
+      return "approval-reply";
     }
     // user-questions 答允面：quote 命中在期问题 → 消费作答，不进任务路由
     if (await this.questions.consume(ev, sameChat)) {
@@ -302,6 +289,19 @@ export class WpsBotCore {
   /** P-D 搜索面（转 HistoryStore）。 */
   searchHistory(chatId: string, query: string, limit?: number) {
     return this.history.search(chatId, query, limit);
+  }
+
+  /** 审批 answerer prepend（转 TaskApprovalService）。 */
+  async handleApprovalRequest(
+    req: import("./task-approval.ts").ApprovalRequestLike,
+    next: () => Promise<import("./task-approval.ts").ApprovalOutcome>,
+  ): Promise<import("./task-approval.ts").ApprovalOutcome> {
+    return this.approvals.handle(req, next);
+  }
+
+  /** user-questions 通道代答（转 TaskQuestionsService）。 */
+  askUserQuestion(request: Parameters<TaskQuestionsService["ask"]>[0]): ReturnType<TaskQuestionsService["ask"]> {
+    return this.questions.ask(request);
   }
 
   private async recordEvidence(ev: WpsEvent): Promise<void> {
@@ -396,121 +396,6 @@ export class WpsBotCore {
     }
     return { cleaned: text.replace(ATTACH_MARKER, "").trim(), files, errors };
   }
-
-  /** 并发审批串行链：同 chat 同时刻至多只挂一只群问（P1 单槽覆盖改案）。 */
-  private readonly approvalByChat = new Map<string, Promise<unknown>>();
-
-  /**
-   * user-questions 通道代答（R6/P-B）：问件 markdown 群发 + quote 绑定答允。
-   * 与审批同纪律：单槽/定时器身份自检/取消即拒；差别：无 audit、无同意语法——纯文本消费。
-   */
-  askUserQuestion(request: Parameters<TaskQuestionsService["ask"]>[0]): ReturnType<TaskQuestionsService["ask"]> {
-    return this.questions.ask(request);
-  }
-
-  /** 审批 answerer（prepend waterfall；GA approval.py:86+ 矩阵） */
-  async handleApprovalRequest(
-    req: ApprovalRequestLike,
-    next: () => Promise<ApprovalOutcome>,
-  ): Promise<ApprovalOutcome> {
-    const chainChatId = this.chatForAgentFn(req.agent);
-    if (chainChatId !== null) {
-      const prev = this.approvalByChat.get(chainChatId) ?? Promise.resolve();
-      const current = prev.catch(() => undefined).then(() => this.handleApprovalRequestInner(req, next));
-      this.approvalByChat.set(chainChatId, current);
-      try {
-        return await current;
-      } finally {
-        if (this.approvalByChat.get(chainChatId) === current) this.approvalByChat.delete(chainChatId);
-      }
-    }
-    return this.handleApprovalRequestInner(req, next);
-  }
-
-  private async handleApprovalRequestInner(
-    req: ApprovalRequestLike,
-    next: () => Promise<ApprovalOutcome>,
-  ): Promise<ApprovalOutcome> {
-    if (this.cfg.approvalMode === "disabled") return next();
-    if (req.signal?.aborted) return "cancelled";
-    const sessionId = this.chatForAgentFn(req.agent);
-    if (sessionId === null) return next();
-    const chatId = parseTaskKey(sessionId)?.chatId ?? sessionId;
-    const owner = this.router.getOwner(sessionId);
-    const requester = this.sessions.getRequester(sessionId);
-    if (requester === undefined) return next();
-    const task = this.router.getTask(sessionId);
-    const allowed = new Set<string>([
-      ...(owner !== undefined ? [owner.userId] : []),
-      ...(task?.participants ?? []).map((p) => p.userId),
-    ]);
-    if (allowed.size === 0) allowed.add(requester.userId);
-
-    const allowWindow = this.cfg.allowWindow && allowsWindowForReason(req.reason);
-    if ([...allowed].some((u) => windowAllows(this.windows, sessionId, u, allowWindow))) {
-      try {
-        const hitUser = [...allowed].find((u) => windowAllows(this.windows, sessionId, u, allowWindow)) ?? requester.userId;
-        const entry = autoAllowEntry({
-          chatId,
-          userId: hitUser,
-          review: req.reason,
-          reason: req.reason,
-          toolName: req.toolName,
-          callId: req.callId,
-          windowExpiresAt: this.windows.expiresAt(sessionId, hitUser) ?? undefined,
-        });
-        withTriple(entry, sessionId, owner, requester);
-        await appendApprovalAudit(this.cfg.auditPath, entry);
-        return "allowed-once";
-      } catch {
-        // 审计失败=fail-closed：显式 unavailable 而不是 next()（另一宽 answerer 在同组合时会抢答）
-        return "unavailable";
-      }
-    }
-
-    // 群问 @：owner + requester（同人只 @一次）；mentions 面尽力
-    const mentionTargets = [
-      owner !== undefined ? owner : requester,
-      ...(owner === undefined || owner.userId === requester.userId ? [] : [requester]),
-    ];
-    const mentions = await Promise.all(
-      mentionTargets.map((t) => this.client.resolveMention(t.userId, t.name).catch(() => null)),
-    ).then((list) => list.filter((m) => m !== null));
-    const reason = String(req.reason ?? "");
-    try {
-      await this.client.sendMarkdownSplit(
-        chatId,
-        approvalQuestion(reason, allowWindow),
-        mentions.length > 0 ? (mentions as never) : null,
-        this.cfg.deliverChunks,
-      );
-    } catch (error) {
-      this.logger.warn("[wps-bot] approval question send failed:", error);
-      return next();
-    }
-    void this.cards.phase(sessionId, { phase: "等待人工审批" });
-
-    const reply = await this.waitReplyFor(sessionId, allowed, req.signal);
-    const decisionUserId = reply.kind === "reply" ? reply.userId ?? requester.userId : requester.userId;
-    const decision = decideApproval(reply, allowWindow, chatId, decisionUserId, reason, this.windows, sessionId);
-    // 三元组全态覆盖（reply/timeout/cancelled/auto-window 一律载账 owner/requester/sessionId）
-    withTriple(decision.audit, sessionId, owner, requester);
-    if (reply.kind === "reply") {
-      decision.audit.approverUserId = decisionUserId;
-    }
-    await appendApprovalAudit(this.cfg.auditPath, decision.audit).catch((error: unknown) => {
-      this.logger.warn("[wps-bot] audit append failed:", error);
-    });
-    if (decision.ackText) {
-      await this.client.sendMarkdown(chatId, decision.ackText, mentions.length > 0 ? (mentions as never) : undefined).catch(() => undefined);
-    }
-    return decision.outcome;
-  }
-
-  /** 每 chat 当轮最高一个含 text 的 assistant 消息正文（GA terminal response 的最后一条）。 */
-  private readonly turnFinalText = new Map<string, string>();
-  /** F4：同 chatId 的 ensure 单飞：两条并发 direct 并发只建一份会话句柄。 */
-  private readonly pendingEnsures = new Map<string, Promise<ChatSessionHandle>>();
 
   /** session/event 钩子：相位 + 终态回答缓冲 + turn/end 的验收/中断/泄流。
    *  wire 形状按 packages/core/session/src/types.ts:252（turn/end: { turn, reason: TurnEndReason }，kind ∈ completed/aborted/error/blocked/max-tokens）。
@@ -687,9 +572,7 @@ export class WpsBotCore {
         notifChatIds.add(chatId);
         await this.notifyInterrupted(chatId, "service_stopping");
       }
-      for (const chatId of [...this.pendings.keys()]) {
-        this.cancelPending(chatId);
-      }
+      this.approvals.cancelAll(new Error("wps-bot: service stopping"));
       this.questions.cancelAll(Object.assign(new Error("wps-bot: 服务已关闭或正在重启"), { code: "ASK_ABORTED" }));
       await this.cards.finishAll(detailFor("service_stopping")).catch(() => undefined);
     })();
@@ -723,171 +606,18 @@ export class WpsBotCore {
   }
 
   pendingCount(): number {
-    return this.pendings.size;
+    return this.approvals.count;
   }
 
   cancelPending(chatId: string): void {
-    const pend = this.pendings.get(chatId);
-    if (pend === undefined) return;
-    pend.resolve({ kind: "cancelled" });
+    this.approvals.cancel(chatId);
   }
 
-  private waitReplyFor(sessionId: string, userIds: Set<string>, signal?: { aborted: boolean; addEventListener?: (evt: string, cb: () => void) => void }): Promise<ReplyEvent> {
-    return this.waitReply(sessionId, userIds, signal);
-  }
 
-  private waitReply(
-    chatId: string,
-    userIds: Set<string>,
-    signal?: { aborted: boolean; addEventListener?: (evt: string, cb: () => void) => void },
-  ): Promise<ReplyEvent> {
-    return new Promise((resolve) => {
-      // b3 身份自检：delete 前核对在册条目仍是「我」——老 timer 不得误删新 pending
-      const selfDelete = (entry: PendingApproval) => {
-        if (this.pendings.get(chatId) === entry) this.pendings.delete(chatId);
-      };
-      const entry: PendingApproval = {
-        userIds,
-        resolve: (reply) => {
-          if ((entry as { settled?: boolean }).settled === true) return; // 迟来答允不得双答（audit/ack 单发）
-          (entry as { settled?: boolean }).settled = true;
-          clearTimeout(timer);
-          if (entry.abortHook) entry.abortHook();
-          selfDelete(entry);
-          resolve(reply);
-        },
-        timer: undefined as unknown as NodeJS.Timeout,
-      };
-      const timer = setTimeout(() => {
-        selfDelete(entry);
-        resolve({ kind: "timeout" });
-      }, this.cfg.approvalTimeoutMs);
-      entry.timer = timer;
-      entry.abortHook = undefined;
-      if (signal?.aborted) {
-        resolve({ kind: "cancelled" });
-        return;
-      }
-      if (signal?.addEventListener) {
-        const onAbort = () => {
-          entry.resolve({ kind: "cancelled" });
-        };
-        signal.addEventListener("abort", onAbort);
-        entry.abortHook = () => {
-          const remover = (signal as unknown as { removeEventListener?: (evt: string, cb: () => void) => void })
-            .removeEventListener;
-          if (typeof remover === "function") {
-            remover.call(signal, "abort", onAbort);
-          }
-        };
-      }
-      // 同 chatId 有老 pending：先 flush 成 cancelled（避免新质竞老情）
-      const old = this.pendings.get(chatId);
-      if (old !== undefined) old.resolve({ kind: "cancelled" });
-      this.pendings.set(chatId, entry);
-    });
-  }
 }
 
-/** GA approval.py 的群问面提示词（Kubernetes 写作拆掉，本插件不做 K8s 特化）。 */
-export function approvalQuestion(review: string, allowWindow: boolean): string {
-  const instruction = allowWindow
-    ? "回复“同意”仅执行本次；回复“同意5分钟”（分钟数可替换）开启限时自动同意——窗口对本对话中您本人发起的后续所有待确认操作生效。"
-    : "本次仅支持回复“同意”执行一次，不开放限时自动同意。";
-  return `**需要确认的操作**\n\n${instruction}其他回复会取消本次操作并交给模型。\n\n${review}`;
-}
+export { approvalQuestion } from "./task-approval.ts";
 
-function decideApproval(
-  reply: ReplyEvent,
-  allowWindow: boolean,
-  chatId: string,
-  userId: string,
-  reason: string,
-  windows: ApprovalWindowStore,
-  /** 窗键面=(sessionId,user)（契约 C4）；audit.chatId 保真 chat。 */
-  sessionKey?: string,
-): { outcome: ApprovalOutcome; ackText: string | null; audit: ApprovalAuditEntry } {
-  const timestamp = Math.floor(Date.now() / 1000);
-  if (reply.kind === "cancelled") {
-    return {
-      outcome: "cancelled",
-      ackText: null,
-      audit: {
-        timestamp,
-        kind: "reply-resolution",
-        auditOutcome: "cancelled",
-        chatId,
-        userId,
-        approved: false,
-        reason,
-      },
-    };
-  }
-  if (reply.kind === "timeout") {
-    return {
-      outcome: "rejected",
-      ackText: ACK_TIMEOUT,
-      audit: {
-        timestamp,
-        kind: "reply-resolution",
-        auditOutcome: "timeout",
-        chatId,
-        userId,
-        approved: false,
-        reason,
-      },
-    };
-  }
-  const minutes = parseConsent(reply.text);
-  if (minutes === null) {
-    return {
-      outcome: "rejected",
-      ackText: ACK_DECLINED,
-      audit: {
-        timestamp,
-        kind: "reply-resolution",
-        auditOutcome: "decision",
-        chatId,
-        userId,
-        approved: false,
-        reason,
-        feedback: reply.text,
-      },
-    };
-  }
-  if (minutes > 0 && allowWindow) {
-    const windowExpiresAt = windows.grant(sessionKey ?? chatId, userId, minutes);
-    return {
-      outcome: "allowed-once",
-      ackText: ackApprovedWindow(minutes),
-      audit: {
-        timestamp,
-        kind: "reply-resolution",
-        auditOutcome: "decision",
-        chatId,
-        userId,
-        approved: true,
-        reason,
-        windowExpiresAt,
-        grantMinutes: minutes,
-      },
-    };
-  }
-  return {
-    outcome: "allowed-once",
-    ackText: minutes > 0 ? ACK_APPROVED_NO_WINDOW : ACK_APPROVED,
-    audit: {
-      timestamp,
-      kind: "reply-resolution",
-      auditOutcome: "decision",
-      chatId,
-      userId,
-      approved: true,
-      reason,
-      ...(minutes > 0 ? { grantMinutes: minutes } : {}),
-    },
-  };
-}
 
 function assistantTextOf(event: { data?: unknown }): string | undefined {
   const message = (event.data as Record<string, unknown> | undefined)?.message as
