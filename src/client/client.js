@@ -42,11 +42,25 @@ exports.apply = function apply(ctx) {
         if (text !== undefined) el.textContent = text;
         return el;
       };
+      const credId = document.createElement("input");
+      credId.placeholder = "clientId";
+      const credSecret = document.createElement("input");
+      credSecret.type = "password";
+      credSecret.placeholder = "clientSecret";
+      const credSp = document.createElement("input");
+      credSp.placeholder = "spId";
       const providerSelect = document.createElement("select");
       const modelSelect = document.createElement("select");
       const saveBtn = h("button", "保存");
       const status = h("span");
       element.appendChild(h("h3", "Gate 生产写审批"));
+      const credRow1 = h("p");
+      credRow1.append(h("label", "clientId: "), credId);
+      const credRow2 = h("p");
+      credRow2.append(h("label", "clientSecret: "), credSecret);
+      const credRow3 = h("p");
+      credRow3.append(h("label", "spId: "), credSp);
+      element.append(credRow1, credRow2, credRow3);
       const provRow = h("p");
       provRow.append(h("label", "供应商: "), providerSelect);
       const modelRow = h("p");
@@ -94,6 +108,9 @@ exports.apply = function apply(ctx) {
             ops: [
               { path: ["provider"], value: providerSelect.value },
               { path: ["model"], value: modelSelect.value },
+              { path: ["clientId"], value: credId.value },
+              { path: ["clientSecret"], value: credSecret.value },
+              { path: ["spId"], value: credSp.value },
             ],
           });
           status.textContent = r.result.ok ? " 已保存（即刻生效）" : " " + ((r.result.error && r.result.error.message) || "保存失败");

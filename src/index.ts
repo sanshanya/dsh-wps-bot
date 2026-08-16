@@ -186,14 +186,13 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
   const logger = ctx.logger ?? console;
   const ctxLogger = typeof ctx.logger === "function" ? ctx.logger("wps-bot") : logger;
 
-  const clientId = config.clientId || process.env.WPS365_CLIENT_ID || "";
-  const clientSecret = config.clientSecret || process.env.WPS365_CLIENT_SECRET || "";
-  const spId = config.spId || process.env.WPS365_SP_ID || "";
-  if (!clientId || !clientSecret || !spId) {
-    throw new Error(
-      "wps-bot: missing credentials (config.clientId / clientSecret / spId，或环境变量的 WPS365_CLIENT_ID / WPS365_CLIENT_SECRET / WPS365_SP_ID)",
-    );
-  }
+  // 凭据 = 后设（settings 页填或环境键或 composition Config）：缺不 throw——挂上并在 creds 到位才 boot
+  const credsOf = (fromCfg: WpsBotConfig): { clientId: string; clientSecret: string; spId: string } => ({
+    clientId: fromCfg.clientId || process.env.WPS365_CLIENT_ID || "",
+    clientSecret: fromCfg.clientSecret || process.env.WPS365_CLIENT_SECRET || "",
+    spId: fromCfg.spId || process.env.WPS365_SP_ID || "",
+  });
+  const creds0 = credsOf(config);
   // 二度报告 §三.7：dsh session meta.cwd 必须绝对路径（ACP 同款 restrict）——boot 期硬校验好于运行期破窗
   if (config.workspaceRoot && !isAbsolute(config.workspaceRoot)) {
     throw new Error(`wps-bot: config.workspaceRoot 必须是绝对路径（收到: ${config.workspaceRoot}）`);
@@ -202,12 +201,12 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
   const client: import("./bot.ts").BotClient =
     deps.client ??
     new WpsClient({
-      clientId,
-      clientSecret,
+      clientId: creds0.clientId,
+      clientSecret: creds0.clientSecret,
       apiBase,
       accessToken: config.accessToken ?? "",
     });
-  const botIds = [clientId, spId];
+  const botIds = [creds0.clientId, creds0.spId];
 
   // ---- 每 chat 的会话句柄与 requester 注册 ----
 
@@ -423,13 +422,20 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
         const inst = (m as unknown as { installSettingsSection: (c: unknown, ns: string, schema: unknown, entry: WpsBotConfig, hooks: { setSource: (n: () => WpsBotConfig) => void; onChange: () => void }) => void }).installSettingsSection;
         inst(rawCtx as unknown, "wps-bot", Config as unknown, config, {
           setSource: (next: () => WpsBotConfig) => { cfgSource = next; },
-          onChange: () => { /* ensure 时实读 */ },
+          onChange: () => {
+            // settings 已填好三凭据入库 → 未启动即刻启动
+            const creds = credsOf(cfgSource());
+            if (creds.clientId !== "" && creds.clientSecret !== "" && creds.spId !== "") startBootstrap();
+          },
         });
       })
       .catch(() => { /* absent peer → noop */ });
   };
 
-  const bootstrap = (async () => {
+  let bootstrap: Promise<void> | undefined;
+  const startBootstrap = (): void => {
+    if (bootstrap !== undefined) return;
+    bootstrap = (async () => {
     dedup = await EventDedup.load({
       limit: 2048,
       path: config.seenEventsPath ?? "runtime/wps-bot-seen-events.jsonl",
@@ -510,7 +516,7 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
     }
 
     if (closed) return;
-    eventClient = factory({ appId: clientId, appSecret: clientSecret, dispatcher });
+    eventClient = factory({ appId: creds0.clientId, appSecret: creds0.clientSecret, dispatcher });
     // 观测锚点必须先行：open-event-sdk 1.0.1 的 start() 在连接存活期间不 resolve——
     // 放 await 后 = 永不打印，stop 时反补一条假信号（二度报告 §三.8 实证）。
     logger.info(
@@ -519,17 +525,23 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
     if (closed) return;
     await eventClient.start();
     wireSettingsSection();
-  })();
+    })().then(undefined, (error: unknown) => {
+      logger.error("[wps-bot] bootstrap failed:", error);
+      console.error("[wps-bot] bootstrap failed:", error);
+    });
+  };
 
 
-  bootstrap.catch((error: unknown) => {
-    // 静默病灶实证：bsl 组合 cordis logger 无处落字——boot 失败必须同时砸 stderr（F5a 转正）
-    logger.error("[wps-bot] bootstrap failed:", error);
-    console.error("[wps-bot] bootstrap failed:", error);
-  });
+  // 凭据到位即发 bootstrap：creds0 满 → 发布直接；否则等 settings 看板
+  const cred0Missing = creds0.clientId === "" || creds0.clientSecret === "" || creds0.spId === "";
+  if (!cred0Missing) {
+    startBootstrap();
+  } else {
+    logger.info("[wps-bot] 凭据未设——在设置页填写 clientId/secret/spId 后自动启动");
+  }
 
   ctx.effect(() => {
-    void bootstrap.catch(() => undefined);
+    void bootstrap?.catch(() => undefined);
     return async () => {
       closed = true;
       try { providerDisposer?.(); } catch { /* 静默 */ }
