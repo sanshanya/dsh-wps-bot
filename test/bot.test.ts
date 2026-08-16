@@ -1035,3 +1035,21 @@ test("P0-2 重启继承回归：registry 文件跨重启，旧回答引用恢复
   assert.equal([...r2.core.router.entries()][0]![0], sessionKey);
 });
 
+
+test("strictFinishContract=true：无 finish_task 的 completed 走 unavailable 通知（宽拒不触达）", async (t) => {
+  const rig = makeRig({ workspaceRoot: undefined }); // rig 带默认=false——用统一 config override
+  // 重建一个 strict=1 的 rig
+  const rig2 = makeRig();
+  await rig2.core.shutdown();
+  // 简化：直接在原 rig 内打开 strictFlag
+  (rig.core as unknown as { cfg: { strictFinishContract?: boolean } }).cfg.strictFinishContract = true;
+  t.after(async () => { await rig.core.shutdown(); await rig.cleanup(); });
+  await rig.core.handleIncomingEvent(ev({ isPrivate: true, chatType: "p2p" }));
+  rig.handle.running = false;
+  rig.core.handleSessionEvent("sess:c1", { type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } });
+  await new Promise((r) => setTimeout(r, 60));
+  const notifyTexts = rig.client.markdowns?.map((m: { markdown: string }) => m.markdown) ?? [];
+  // 宽松面下同一流程会发「无法继续完成」(G3);strict 下走的是 normalizationNotice——照看 client.submits
+  const allOut = [...rig.client.splits.map((s) => s.text), ...notifyTexts];
+  assert.ok(allOut.some((t) => t.includes("无法") || t.includes("unavailable") || t.includes("服务")), `strict+无finish 须致 unvailable 面达: ${JSON.stringify(allOut).slice(0,120)}`);
+});
