@@ -1,8 +1,8 @@
 {
   "_meta": {
     "generated_by": "scripts/token-budget.mjs",
-    "generated_at": "2026-08-16T06:36:12Z",
-    "git_head": "115f8612d94390fba2fd70941352c8287db1111c",
+    "generated_at": "2026-08-16T06:36:42Z",
+    "git_head": "964db43c5cc3d5dd9908dc5bdba306f769af4733",
     "tokenizer": "cl100k_base (js-tiktoken)",
     "enumeration": "git ls-files -z",
     "excluded_names": [
@@ -15,8 +15,8 @@
   "categories": {
     "source": 33550,
     "tests": 30724,
-    "docs": 14881,
-    "tooling": 8020
+    "docs": 16234,
+    "tooling": 8513
   },
-  "total": 87175
+  "total": 89021
 }

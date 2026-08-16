@@ -1,0 +1,35 @@
+# dsh-wps-bot 最小 CI（g4 修订版）
+# 生效前提：发布阻断两件已落地 —— 1A 建 lib/（tsconfig.build.json + build 脚本）、
+# 1B 锁重生 0 link（peer 同源 pin ^0.1.0-rc.6 + @types/node devDep）。
+# 相对 b4 草案三处修正：① pack 白名单 regex 收窄到 lib/（草案的 src|lib|examples 会放过夹带）；
+# ② 增 npm run build 前置（verify-pack 依赖 lib 存在）；③ eol=lf 由 .gitattributes 保证，budget 才跨平台确定。
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  gates:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node: [22, 24]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci                 # 干净装自足：1B 落地后 0 link
+      - run: npm run typecheck      # 冷装过 = @types/node 直控 devDep（无 TS2688）
+      - run: npm test               # node --test test/*.test.ts；Node≥22 自行展开 glob（win cmd 不展开，已实证）
+      - run: npm run budget:tokens  # ratchet 门禁；eol=lf 保证 ubuntu/windows 字节一致
+      - run: npm run build          # lib/*.js + lib/**/*.d.ts
+      - run: npm run verify:pack    # tarball 白名单 + 裸 consumer node/tsc 探测
