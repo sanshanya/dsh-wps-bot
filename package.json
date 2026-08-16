@@ -6,17 +6,30 @@
   "license": "MIT",
   "author": "sanshanya",
   "private": false,
-  "main": "src/index.ts",
+  "main": "lib/index.js",
   "exports": {
-    ".": "./src/index.ts",
-    "./protocol": "./src/protocol.ts",
-    "./client": "./src/client.ts",
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./bot": {
+      "types": "./lib/bot.d.ts",
+      "default": "./lib/bot.js"
+    },
+    "./protocol": {
+      "types": "./lib/protocol.d.ts",
+      "default": "./lib/protocol.js"
+    },
+    "./client": {
+      "types": "./lib/client.d.ts",
+      "default": "./lib/client.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
-    "src",
+    "lib",
     "cordis.patch.yml",
-    "examples",
+    "examples/wps-bot.cordis.yml",
     "README.md",
     "LICENSE"
   ],
@@ -24,24 +37,33 @@
     "test": "node --test test/*.test.ts",
     "typecheck": "tsc --noEmit",
     "survey:tokens": "node scripts/token-survey.mjs",
-    "budget:tokens": "node scripts/token-budget.mjs"
+    "budget:tokens": "node scripts/token-budget.mjs",
+    "build": "tsc -p tsconfig.build.json",
+    "prepublishOnly": "npm run build && npm run verify:pack",
+    "verify:pack": "node scripts/verify-pack.mjs"
   },
   "dependencies": {
     "open-event-sdk": "^1.0.1"
   },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "*",
-    "@deepseek-ai/dsh-agent": "*",
-    "@deepseek-ai/dsh-llm": "*",
-    "@deepseek-ai/dsh-session": "*",
-    "@deepseek-ai/schemastery": "*"
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-agent": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-llm": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-session": "^0.1.0-rc.6",
+    "@deepseek-ai/schemastery": "^3.18.1"
   },
   "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-agent": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-llm": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-session": "^0.1.0-rc.6",
+    "@deepseek-ai/schemastery": "^3.18.1",
+    "@types/node": "^22",
     "js-tiktoken": "^1.0.21",
     "typescript": "^5.9.0"
   },
   "engines": {
-    "node": ">=22.19"
+    "node": "^22.19.0 || >=24.0.0"
   },
   "repository": {
     "type": "git",

@@ -4,3 +4,6 @@ node_modules/
 .DS_Store
 runtime/
 rounds/
+
+# tsc build 产物（发布由 prepublishOnly 构建）
+lib/
