@@ -247,7 +247,9 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
     let entry = chats.get(chatId);
     if (entry !== undefined && entry.handle !== undefined) return wrap(chatId);
     // F5/R17：resume 优先——持久 line 截盘上已存在同 id 时 create 走拒绝路径，turn 照跑零持久化零信号
-    const sessionId = SessionId(`wps-bot:${chatId}`);
+    // P0-1 修复（评估：旧线双前缀实证）：入参即任务会话键（router 源头保证），
+    // 非任务键形态才回包（p2p 直通/测试 fake 面）；禁止裸包。
+    const sessionId = SessionId(parseTaskKey(chatId) !== null ? chatId : `wps-bot:${chatId}`);
     const handle = (await createOrResume(ctx.agents, {
       sessionId,
       cwd: config.workspaceRoot || process.cwd(),
@@ -401,6 +403,7 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
       path: config.seenEventsPath ?? "runtime/wps-bot-seen-events.jsonl",
     });
     core = buildCore(dedup);
+    await core.loadRegistry().catch((error) => logger.warn('[wps-bot] quoteRegistry load 失败:', error));
     const dispatcher = new Dispatcher().registerFunc(
       "kso.app_chat.message.create",
       async (event: unknown) => {

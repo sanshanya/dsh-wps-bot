@@ -15,8 +15,14 @@ export interface ChatSessionHandle {
   inject(text: string): boolean;
 }
 
+export interface QuoteLookup {
+  lookup(botMessageId: string): { sessionId: string; chatId: string } | null;
+}
+
 export interface RouterOptions {
   dedup: EventDedup;
+  /** P0-2 修复：注入唯一持久真源（QuoteRegistry）；缺位再回落内存热件。 */
+  quoteLookup?: QuoteLookup;
   /** 为空 chat 构造句柄（首次 direct 消息时宿主建会话）。 */
   ensure: (chatId: string) => Promise<ChatSessionHandle>;
   /** 成功 inject 后的可控 ack（GA app.py:250 的文案语义，宿主决定发不发）。 */
@@ -149,7 +155,23 @@ export class WpsRouter {
     return this.enqueueTo(fresh, ev);
   }
 
+  /** quote 参照：先查询唯一持久真源（task 在册则返回；不在册=会话已废→null，按 new task 走）
+   *  落底：registry 未注入时查热件 outboundIds（兼容单测路径）。 */
+  /** 注册表命中但任务不在册（重启后/会话已裁）→ 从键义重立任务状态（resume 会话来路） */
+  private reviveTask(sessionId: string): TaskState | null {
+    const parts = ((k) => { const se = k.slice(8).split(":"); return se.length === 3 ? se : null; })(sessionId);
+    if (parts === null) return null;
+    const [chatId, ownerId, taskId] = parts as [string, string, string];
+    this.opts.logger?.warn(`[wps-bot] 引用继承 revive 旧任务会话 ${sessionId}`);
+    return this.createTask(chatId, ownerId, ownerId, taskId);
+  }
+
   private lookupQuote(quoteMsgId: string): TaskState | null {
+    const regHit = this.opts.quoteLookup?.lookup(quoteMsgId);
+    if (regHit !== undefined) {
+      if (regHit === null) return null;
+      return this.tasks.get(regHit.sessionId) ?? this.reviveTask(regHit.sessionId);
+    }
     for (const [, task] of this.tasks) {
       if (task.handle && this.ownedOutIds(task.sessionId)?.has(quoteMsgId)) return task;
     }

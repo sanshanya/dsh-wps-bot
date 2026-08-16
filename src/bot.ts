@@ -212,11 +212,14 @@ export class WpsBotCore {
       updateMinIntervalMs: this.cfg.cardUpdateMinIntervalMs,
       settle: this.cfg.cardSettle,
       mode: this.cfg.cardMode,
+      onSent: (sessionId: string, chatId: string, messageId: string) =>
+        this.registerOutboundIds(sessionId, chatId, [messageId]),
       logger: this.logger,
     });
 
     this.router = new WpsRouter({
       dedup: opts.dedup,
+      quoteLookup: this.quoteRegistry,
       // 改 buildCore：抱抱 chorine 整座 ensure 调用一个 p-cycle 的单飞避免并发创两次会话（报告 P0-4）
       ensure: (chatId) => this.singleFlightEnsure(chatId),
       // GA accepts_progress_reply：quote == 在途进度卡 id 且会话在跑
@@ -243,6 +246,11 @@ export class WpsBotCore {
       },
       logger: { warn: (...args: unknown[]) => this.logger.warn(...args) },
     });
+  }
+
+  /** P0-2/P-C：启动期载入持久注册面——引用继承必须跨重启成立。 */
+  async loadRegistry(): Promise<void> {
+    await this.quoteRegistry.load();
   }
 
   /**
@@ -376,6 +384,13 @@ export class WpsBotCore {
   }
 
   /** GA:339 落盘序——downloads/{sha256(eventId)[:12]}/{NN}_{safeName|kind}；逐件容错进 observations。 */
+  /** P0-2：出站 id 统一登记（卡片/文本/文件同口）——registry（持久真源）+ router 热件同写。 */
+  private registerOutboundIds(sessionId: string, chatId: string, ids: string[]): void {
+    if (ids.length === 0) return;
+    this.router.registerOutbound(sessionId, ids);
+    void this.quoteRegistry.register(ids, sessionId, chatId).catch(() => undefined);
+  }
+
   private async materializeAttachments(ev: WpsEvent): Promise<void> {
     const withKey = ev.attachments.filter((a) => a.storageKey);
     if (withKey.length === 0) return;
@@ -686,7 +701,7 @@ export class WpsBotCore {
       const deliveryErrors = [...errors];
       if (cleaned.length > 0 || files.length === 0) {
         const ids = await this.client.sendMarkdownSplit(chatId, cleaned, null, this.cfg.deliverChunks);
-        await this.quoteRegistry.register(ids, `wps-bot:${chatId}`, chatId).catch(() => undefined);
+        this.registerOutboundIds(chatId, parseTaskKey(chatId)?.chatId ?? chatId, ids);
       }
       for (const { marker, candidate } of files) {
         const name = basename(candidate);
@@ -697,7 +712,10 @@ export class WpsBotCore {
           continue;
         }
         try {
-          await this.client.uploadFile(chatId, name, await readFile(candidate));
+          // 全量出站登记：文件消息 id 也进继承面
+          const uploadSent = await this.client.uploadFile(chatId, name, await readFile(candidate));
+          const uploadIds = (uploadSent as { messageId?: unknown }).messageId;
+          this.registerOutboundIds(chatId, parseTaskKey(chatId)?.chatId ?? chatId, typeof uploadIds === "string" && uploadIds !== "" ? [uploadIds] : []);
         } catch (error) {
           deliveryErrors.push(`Artifact delivery failed for ${name}: ${String(error)}`);
         }

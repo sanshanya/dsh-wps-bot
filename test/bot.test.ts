@@ -83,6 +83,7 @@ function makeRig(over: {
   workspaceRoot?: string;
   cardMode?: "card" | "off";
   cardInitialDelayMs?: number;
+  quoteRegistryPath?: string;
   approvalTimeoutMs?: number;
 } = {}): Rig {
   const client = new FakeClient();
@@ -138,6 +139,7 @@ function makeRig(over: {
       ackInterventionText: "已收到补充信息，当前任务会在下一轮处理。",
       deliverChunks: 4500,
       workspaceRoot: over.workspaceRoot ?? join(tmpRoot, "ws"),
+      quoteRegistryPath: over.quoteRegistryPath,
     },
   });
   return {
@@ -407,11 +409,12 @@ test("quote：只有引用在途进度卡才算 direct；完结后旧卡引证�
     await SLEEP(80);
     assert.equal(client.recalls.length, 1);
 
-    // 已完结：再 quote 这张卡按 GA accepts_progress_reply 不成立（进度卡不在途）→ 静默
+    // P-C/G5 语义文书重定：完结任务的卡也注册了在册 id → 引用=恢复旧会话（D1 注册表消费）
     assert.equal(
       await core.handleIncomingEvent(ev({ quoteMsgId: "card-1", text: "再看看" })),
-      "drop",
+      "enqueue", // quote 继承同任务会话——恢复后 followup
     );
+    assert.ok(handle.followupLog.some((f) => f.includes("再看看")));
   } finally {
     await core.shutdown();
     await cleanup();
@@ -854,7 +857,8 @@ test("G5/P-C：requester=最近触发；审批权=owner+participants（quote 继
 
   // B quote A 的在册出站 id → 继承入会 + inject 到 A 任务
   const taskA = [...requesters.keys()][0]!;
-  core.router.registerOutbound(taskA, ["a-card-1"]);
+  // P0-2 单源后：唯一真源=registry（热件 registerOutbound 已不做 quote 面唯一证）；向真源记件
+  await rig.core.quoteRegistry.register(["a-card-1"], taskA, "c1");
   const r2 = await core.handleIncomingEvent(ev({ senderId: "u-B", senderName: "乙", quoteMsgId: "a-card-1", text: "补充" }));
   assert.equal(r2, "inject");
   const taskState = core.router.getTask(taskA);
@@ -990,3 +994,28 @@ test("P-D：inbound 全件归档 + searchHistory 同 chat 检索（读开历史�
   // 别 chat 互相隔离
   assert.equal((await rig.core.searchHistory("c2", "巡检")).length, 0);
 });
+test("P0-2 重启继承回归：registry 文件跨重启，旧回答引用恢复旧会话", async (t) => {
+  const r1 = makeRig();
+  t.after(async () => { await r1.core.shutdown(); await r1.cleanup(); });
+  await r1.core.handleIncomingEvent(ev({ isPrivate: true, chatType: "p2p", text: "立项" }));
+  r1.handle.running = false;
+  r1.core.handleSessionEvent("sess:c1", { type: "assistant/message", data: { turn: 1, step: 1, message: { content: [{ type: "text", text: "立项完成总结" }] } } });
+  r1.core.handleSessionEvent("sess:c1", { type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } });
+  await new Promise((r) => setTimeout(r, 80));
+  // FakeClient.sendMarkdownSplit 恒返 "m-1"——交付件在册 id 就是它
+  const deliveredId = "m-1";
+  assert.ok(r1.client.splits.length >= 1);
+  const sessionKey = r1.lastKey();
+  const registryPath = `${r1.tmpdir}/ws/quote-registry.jsonl`;
+  await r1.core.shutdown();
+
+  // 第二开合（同一注册表文件）→ reload 后旧回答引用续进旧会话
+  const r2 = makeRig({ quoteRegistryPath: registryPath });
+  t.after(async () => { await r2.core.shutdown(); await r2.cleanup(); });
+  await r2.core.loadRegistry();
+  const route = await r2.core.handleIncomingEvent(ev({ quoteMsgId: deliveredId, text: "回顾下上次总结" }));
+  assert.equal(route, "enqueue");
+  // 命中的是同一任务会话键（而不是按 sender 新建）
+  assert.equal([...r2.core.router.entries()][0]![0], sessionKey);
+});
+

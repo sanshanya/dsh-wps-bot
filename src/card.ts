@@ -24,6 +24,8 @@ export interface ProgressCardsOptions {
   updateMinIntervalMs?: number;
   settle?: "recall" | "update";
   mode?: "card" | "off";
+  /** P0-2：真实发出的卡 messageId 登记钩（引用继承登记面，含撤回流事故件）。 */
+  onSent?: (sessionId: string, chatId: string, messageId: string) => void;
   logger?: { warn(this: unknown, msg: string, error?: unknown): void };
 }
 
@@ -64,11 +66,13 @@ export function renderCard(
 }
 
 export class ProgressCards {
-  private readonly opts: Required<Omit<ProgressCardsOptions, "logger">>;
+  private readonly opts: Required<Omit<ProgressCardsOptions, "logger" | "onSent">>;
   private readonly logger: ProgressCardsOptions["logger"];
+  private readonly onSent: ProgressCardsOptions["onSent"];
   private readonly states = new Map<string, CardState>();
 
   constructor(opts: ProgressCardsOptions) {
+    this.onSent = opts.onSent;
     this.opts = {
       client: opts.client,
       title: opts.title,
@@ -205,6 +209,7 @@ export class ProgressCards {
       try { await this.opts.client.recallMessage(messageId); } catch { /* 静默 */ }
       return;
     }
+    this.onSent?.(chatId, state.destChatId, messageId);
     state.messageId = messageId;
     state.heartbeatTimer = setInterval(() => {
       const st = this.states.get(chatId);
