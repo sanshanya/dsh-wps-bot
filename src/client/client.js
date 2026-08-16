@@ -42,6 +42,7 @@ function WpsBotSection(props) {
     })();
   }, []);
 
+  const [bridge, setBridge] = React.useState(true);
   const [provider, setProvider] = React.useState("");
   const [model, setModel] = React.useState("");
   const [clientId, setClientId] = React.useState("");
@@ -54,7 +55,8 @@ function WpsBotSection(props) {
       const r = await props.connection.api.settings.mutate({
         ns: NS,
         ops: [
-          { path: ["provider"], value: provider },
+          { path: ["bridge"], value: bridge },
+      { path: ["provider"], value: provider },
           { path: ["model"], value: model },
           { path: ["clientId"], value: clientId },
           { path: ["clientSecret"], value: clientSecret },
@@ -75,6 +77,9 @@ function WpsBotSection(props) {
     e("div", null, e("input", { placeholder: "clientSecret", type: "password", value: clientSecret, onChange: (ev) => setClientSecret(ev.target.value), style: { display: "block", marginBottom: 8, width: "60%" } })),
     e("div", null, e("input", { placeholder: "spId", value: spId, onChange: (ev) => setSpId(ev.target.value), style: { display: "block", marginBottom: 8, width: "60%" } })),
     e("p", null, "供应商 / 模型："),
+    e("label", { style: { display: "block", marginBottom: 8 } },
+      e("input", { type: "checkbox", checked: bridge, onChange: (ev) => setBridge(ev.target.checked) }),
+      " 启用 bridge（WPS 通道）"),
     e("select", { value: provider, onChange: (ev) => setProvider(ev.target.value), style: { display: "block", marginBottom: 8 } },
       listProviders.map((p) => e("option", { key: p.provider || "default", value: p.provider }, p.displayName))),
     e("select", { value: model, onChange: (ev) => setModel(ev.target.value), style: { display: "block", marginBottom: 8 } },

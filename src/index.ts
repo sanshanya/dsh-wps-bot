@@ -43,6 +43,8 @@ export interface WpsBotConfig {
   clientSecret?: string;
   spId?: string;
   apiBase?: string;
+  /** bridge 开关：false=插件在场但不开 WS——配置页同日记。 */
+  bridge?: boolean;
   /** 直接注入 access_token（联调场景；空走 oauth2） */
   accessToken?: string;
   provider?: string;
@@ -72,6 +74,7 @@ export const Config: Schema<WpsBotConfig> = Schema.object({
   clientSecret: Schema.string().default(""),
   spId: Schema.string().default(""),
   apiBase: Schema.string().default("https://openapi.wps.cn"),
+  bridge: Schema.boolean().default(true),
   accessToken: Schema.string().default(""),
   provider: Schema.string().default("deepseek-official"),
   model: Schema.string().default("deepseek-v4-flash"),
@@ -423,9 +426,15 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
         inst(rawCtx as unknown, "wps-bot", Config as unknown, config, {
           setSource: (next: () => WpsBotConfig) => { cfgSource = next; },
           onChange: () => {
-            // settings 已填好三凭据入库 → 未启动即刻启动
-            const creds = credsOf(cfgSource());
-            if (creds.clientId !== "" && creds.clientSecret !== "" && creds.spId !== "") startBootstrap();
+            const live = cfgSource();
+            const creds = credsOf(live);
+            const credsOk = creds.clientId !== "" && creds.clientSecret !== "" && creds.spId !== "";
+            if (live.bridge === false && eventClient !== null && eventClient !== undefined) {
+              try { eventClient.stop(); } catch { /* 静默 */ }
+              logger.info("[wps-bot] bridge 关闭（WS 断开）");
+            } else if (live.bridge !== false && credsOk) {
+              startBootstrap();
+            }
           },
         });
       })
@@ -532,12 +541,14 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
   };
 
 
-  // 凭据到位即发 bootstrap：creds0 满 → 发布直接；否则等 settings 看板
+  // 凭据 + bridge 面到位即发 bootstrap；两关都关的式
   const cred0Missing = creds0.clientId === "" || creds0.clientSecret === "" || creds0.spId === "";
-  if (!cred0Missing) {
-    startBootstrap();
-  } else {
+  if (config.bridge === false) {
+    logger.info("[wps-bot] bridge=false——插件在场但 WS 不开（设置页面打开后自动启动）");
+  } else if (cred0Missing) {
     logger.info("[wps-bot] 凭据未设——在设置页填写 clientId/secret/spId 后自动启动");
+  } else {
+    startBootstrap();
   }
 
   ctx.effect(() => {
