@@ -71,11 +71,13 @@ export interface WpsBotConfig {
 
 export const Config: Schema<WpsBotConfig> = Schema.object({
   clientId: Schema.string().default(""),
-  clientSecret: Schema.string().default(""),
+  // role('secret')：settings.describe 永不下线其值（secrets 槽只报 set 与否），页面字段成 write-only。
+  clientSecret: Schema.string().role("secret").default(""),
   spId: Schema.string().default(""),
   apiBase: Schema.string().default("https://openapi.wps.cn"),
   bridge: Schema.boolean().default(true),
-  accessToken: Schema.string().default(""),
+  // 运行期自举凭据（clientId/secret 换得），同样 write-only。
+  accessToken: Schema.string().role("secret").default(""),
   provider: Schema.string().default("deepseek-official"),
   model: Schema.string().default("deepseek-v4-flash"),
   workspaceRoot: Schema.string().default(""),
