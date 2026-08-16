@@ -432,10 +432,20 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
     }).userQuestions;
     if (core !== null && userQuestions?.registerProvider !== undefined) {
       const owned = core;
-      userQuestions.registerProvider({
-        ask: (request: unknown) => owned.askUserQuestion(request as Parameters<typeof owned.askUserQuestion>[0]),
-      });
-      logger.info("[wps-bot] user-questions provider 已注册");
+      try {
+        userQuestions.registerProvider({
+          ask: (request: unknown) => owned.askUserQuestion(request as Parameters<typeof owned.askUserQuestion>[0]),
+        });
+        logger.info("[wps-bot] user-questions provider 已注册");
+      } catch (error) {
+        // cordis 单主面：apiproxy 已注册（广播面）时降级——通道代答不抢主；
+        // 现行组合本不挂 tool-ask-user，问面空转自洽（PROFILE.md 已登记）
+        if ((error as { code?: string }).code === "DUPLICATE_PROVIDER") {
+          logger.warn("[wps-bot] user-questions provider 已有主（apiproxy 广播面）——通道代答跳过");
+        } else {
+          throw error;
+        }
+      }
     } else {
       logger.warn("[wps-bot] userQuestions 服务未挂载——ask_user_question 将报错（组合层补挂 dsh-user-questions）");
     }
