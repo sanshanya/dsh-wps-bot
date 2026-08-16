@@ -1,7 +1,5 @@
 /**
  * WPS 通道分诊器（dispatch router）。考古锚点见 docs/references.md。
- *
- * @module dsh-wps-bot/dispatch
  */
 
 import type { WpsEvent } from "./protocol.ts";

@@ -1,8 +1,5 @@
 /**
  * 冒烟 2：真 WS 入站监听 + 原始整帧落地。
- *  每个事件写两行到 /tmp/wps-bot-e2e/ws-frames.jsonl：
- *    - {"at", event_id, parsed: <整包 raw event.data JSON 解析层>}（帧本体）
- *    - {"at", event_id, razor: {...}}            （防自答/mention/内容 摘要判定）
  */
 import { Client, Dispatcher, LogLevel } from 'open-event-sdk';
 

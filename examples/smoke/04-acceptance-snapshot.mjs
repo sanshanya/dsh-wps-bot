@@ -1,12 +1,6 @@
 /**
  * 冒烟 4：真机三场景验收快照——三面证据一键对撞。
- *   ① WS 原始帧（WSL 侧车 /tmp/wps-bot-e2e/ws-frames.jsonl）
- *   ② 宿主日志（F:\github\ksbot-dsh\runtime\logs\wps-bot-*.log)
- *   ③ REST 真历史（/v7/chats/{chat_id}/messages, 键名 data.items）
- *   ④ dedup/audit JSONL（runtime/wps-bot-*.jsonl）
- *
  * 用法：node --env-file /tmp/wps-bot-e2e/env.local examples/smoke/04-acceptance-snapshot.mjs <chat_id> [sinceISO]
- * sinceISO 缺省取最近 30 分钟。
  */
 import { readFile, readdir } from 'node:fs/promises';
 import { WpsClient } from '../../src/client.ts';

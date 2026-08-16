@@ -294,10 +294,7 @@ export class WpsBotCore {
     for (const line of lines) ev.observations.push(line);
   }
 
-  /**
-   * GA _download_attachments 对位：downloads/{sha256(eventId)[:12]}/{NN}_{safeName|kind}。
-   * 逐附件容错——失败不阻断分发，观察原样进 observations 供 factify 注入（GA:527-531）。
-   */
+  /** GA:339 落盘序——downloads/{sha256(eventId)[:12]}/{NN}_{safeName|kind}；逐件容错进 observations。 */
   private async materializeAttachments(ev: WpsEvent): Promise<void> {
     const withKey = ev.attachments.filter((a) => a.storageKey);
     if (withKey.length === 0) return;
@@ -320,10 +317,7 @@ export class WpsBotCore {
     }
   }
 
-  /**
-   * GA _ATTACHMENT 收集（ga_runtime.py:272-289）：marker 解析 → 必须在 artifacts 根内的
-   * 现存文件；违规/缺失记 errors（原样上群）；marker 从交付正文剥离。
-   */
+  /** ga_runtime.py:272-289 [[attach:]]：artifacts 根内现存文件；违规/缺失记 errors；marker 剥离。 */
   private extractArtifacts(
     text: string,
   ): { cleaned: string; files: Array<{ marker: string; candidate: string }>; errors: string[] } {
@@ -580,10 +574,7 @@ export class WpsBotCore {
     }
   }
 
-  /**
-   * GA app.py:372-395 交付序：正文（剥离 attach marker）→ 产物逐个 upload_file →
-   * 交付失败逐条 markdown 通告（同文案:Artifact delivery failed …）。
-   */
+  /** GA app.py:372-395 交付序：正文→产物逐个 upload→失败逐条 markdown 通告。 */
   async deliver(chatId: string, text: string): Promise<void> {
     try {
       const { cleaned, files, errors } = this.extractArtifacts(text);

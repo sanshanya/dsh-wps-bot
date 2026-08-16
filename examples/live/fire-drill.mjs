@@ -1,14 +1,6 @@
 /**
  * 活火演练（fire drill）：真 REST 出站 + 真 pacing + 编排 agent——不依赖 LLM 的全链路自检。
- * 直接驱动 WpsBotCore（bot.ts 是宿主无关语义核；cordis 接线已由 host-boot E2E 覆盖），
- * logger=console——cordis 默认 logger 静默，演练要看得见每一步。
- *
- * 覆盖：入站真帧归一 → dedup → 路由 → requester → 进度卡（12s/两次心跳）
- *   → 审批群问（人回「同意5分钟」→ 窗；不回 → 超时取消旁路）
- *   → 终态回答 → 卡 recall 收口 → dedup/审计 JSONL
- *
  * 用法：node --env-file /tmp/wps-bot-e2e/env.local examples/live/fire-drill.mjs [chatId] [waitApproveMs]
- * 出站全是真实 WPS 发送（群里出现演练消息属预期）。
  */
 import { WpsBotCore } from '../../src/bot.ts';
 import { WpsClient } from '../../src/client.ts';

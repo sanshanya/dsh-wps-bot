@@ -1,10 +1,5 @@
 /**
  * 冒烟 1：真 WPS 租户自签自证（不发送任何消息）。
- *  Step 1: OAuth 取 access_token；
- *  Step 2: 加 KSO-1 签名调 /v7/service_principals/current；
- *  Step 3: 打印服务主体 id + company_id —— 后者同时给出两个关键焊点的真值：
- *    - WPS365_SP_ID 的真实数值（之前 env 里没配，本脚本自证后补进 env.local）
- *    - bot 消息 sender.type 的真实形状（'app'/'service_principal'?）
  */
 import { WpsClient } from '../../src/client.ts';
 
