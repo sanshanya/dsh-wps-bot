@@ -24,7 +24,6 @@ import { HistoryStore } from "./history.ts";
 import { TaskDeliveryService, safeArtifactName, taskRootOf } from "./task-delivery.ts";
 import { TaskApprovalService } from "./task-approval.ts";
 import { ACK_APPROVED, ACK_APPROVED_NO_WINDOW, ACK_DECLINED, ACK_TIMEOUT, ackApprovedWindow, allowsWindowForReason, type ReplyEvent } from "./task-approval.ts";
-import { TaskQuestionsService } from "./task-questions.ts";
 import type { EventDedup } from "./dedup.ts";
 import type { WpsEvent } from "./protocol.ts";
 import { WpsRouter, type ChatSessionHandle, type Route } from "./task-router.ts";
@@ -406,7 +405,7 @@ ${q.question}`);
     return this.approvals.handle(req, next);
   }
 
-  /** user-questions 通道代答（转 TaskQuestionsService）。 */
+  /** user-questions 通道代答（回并自 task-questions.ts）。 */
   askUserQuestion(request: { questions: Array<{ id: string; question: string; detail?: string; header?: string; options?: Array<{ label: string }> }>; agent?: unknown; signal?: { aborted: boolean; addEventListener?: (evt: string, cb: () => void) => void } }): Promise<{ answers: Array<{ id: string; selected: string[]; custom?: string }> }> {
     return this.questionsImpl(request);
   }
