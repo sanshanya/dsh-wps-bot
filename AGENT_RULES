@@ -1,0 +1,2 @@
+
+23. wpsbot plugin 挂入后不得触碰 webui/原生 dsh 渲道：只受影响「经 WPS 通道过来的请求」；配置页是唯一 UI 面，不作为任何其它道擦。provider/model/凭据只续经由本插的会话，不全局。
