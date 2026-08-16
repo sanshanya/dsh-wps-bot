@@ -222,6 +222,9 @@ if (!can) {
     await pushey.bag.pusher!(frameBotMessage("p2p"));
     await waitFor(() => [...ivi.handlesBySession.keys()].length === 1);
     const k1 = [...ivi.handlesBySession.keys()][0]!;
+    // 评估 P0-1 生产级断言：create 收到的 sessionId 必须是准任务会话键（不存在第二 wps-bot: 前缀）
+    const dek = k1.split(":");
+    assert.equal(dek.length, 4, `任务会话键非四段(${dek.length})：${k1}`);
     const s1 = ivi.sessions(k1)!;
     assert.ok(s1.record.followups[0]!.includes("第一份出栈答数"));
     assert.ok(s1.running.running);
@@ -293,6 +296,8 @@ if (!can) {
       void (approval(req, async () => "rejected") as Promise<string>).then((outcome) => resolve(outcome));
     });
     await waitFor(() => client.sends.some((s) => s.markdown.includes("需要确认的操作")));
+    // 评估 P0-1 导出断言：receiver 路径收到的 chatId 必须纯聊无任务键残（防二次前缀）
+    assert.ok(client.sends.every((s) => !s.chatId.includes(":")), `receiver id 含 : —— sessionKey 外泄: ${client.sends.map((x) => x.chatId).join(",")}`);
     assert.ok(client.sends[0]!.markdown.includes("测试操作"));
 
     // 群答「同意」走真事件帧
