@@ -16,6 +16,11 @@ export interface HistoryHit {
   text: string;
 }
 
+/** 归档文件寻址单源（bot 内省件与 skills/wps-chat 脚本共用，禁止第二处重写本规则）。 */
+export function historyFilePath(workspaceRoot: string, chatId: string): string {
+  return join(workspaceRoot, "history", sanitizePathKey(chatId), "history.jsonl");
+}
+
 export class HistoryStore {
   private readonly workspaceRoot: string;
   /** per-file 写入串行链：同 chat 并行事件按到达序落行（竞态实证）。 */
@@ -26,7 +31,7 @@ export class HistoryStore {
   }
 
   private fileOf(chatId: string): string {
-    return join(this.workspaceRoot, "history", sanitizePathKey(chatId), "history.jsonl");
+    return historyFilePath(this.workspaceRoot, chatId);
   }
 
   async record(ev: WpsEvent): Promise<void> {

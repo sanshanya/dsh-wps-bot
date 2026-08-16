@@ -70,7 +70,7 @@ docs/references.md       构成依据、SDK/wps-docs 索引与抓取清单
 - 任务写入隔离：`workspaceRoot/<chatId>/<userId>/<taskId>/{downloads,artifacts,work}`；downloads 键 `sha256(message_id)[:12]/NN_safeName`；artifacts 经 `[[attach:artifacts/FILE]]` 出群。
 - 跨群历史只读：`workspaceRoot/history/<chatId>/history.jsonl`，全任务可读、无群级 gate；读操作写 JSONL 审计（谁/哪个 session/读了什么）。
 - 证据落盘（R4）：不可归一节点、云文档链接、shared_doc_ids 三路由 JSONL 落盘（`unparsed_content.jsonl`/`cloud_docs.jsonl`/`shared_doc_ids.jsonl`，路径随事实进 prompt）——未知节点不再静默蒸发。
-- `search_wps_history({chatId?,userId?,since?,until?,keywords[],limit})` 只读模型工具；模型自取旧证据继续工作。
+- 历史翻查与中途插话均为 `skills/wps-chat` 的脚本面（第二轮 §2.1 极简工具面：模型可见业务 tool 只有 finish_task；history 读本地归档，reply 经脚本 openapi 直发、凭据只吃 env）。
 
 ## 呈现层（现有契约保留）
 

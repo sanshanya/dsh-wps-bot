@@ -5,6 +5,7 @@
  */
 
 import { isAbsolute, join } from "node:path";
+import { mkdir, writeFile } from "node:fs/promises";
 
 import { Client as WpsEventClient, Dispatcher, LogLevel } from "open-event-sdk";
 
@@ -15,6 +16,7 @@ import { SessionId } from "@deepseek-ai/dsh-session";
 
 import { WpsClient } from "./client.ts";
 import { EventDedup } from "./dedup.ts";
+import { historyFilePath } from "./history.ts";
 import {
   normalizeEventData,
   isSelfEvent,
@@ -281,6 +283,21 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
       chats.set(chatId, entry);
     }
     entry.handle = handle;
+    // wps-chat skill 落点（§9.3/C）：把「我是谁/我的归档在哪」以纯数据交付脚本面——凭据不落盘（脚本走 env）。
+    void (async () => {
+      const wsRoot = config.workspaceRoot || process.cwd();
+      const displayChatId = taskParts?.chatId ?? chatId;
+      await mkdir(cwd, { recursive: true });
+      await writeFile(
+        join(cwd, ".wps_context.json"),
+        JSON.stringify({
+          chatId: displayChatId,
+          sessionKey: String(sessionId),
+          historyFile: historyFilePath(wsRoot, displayChatId),
+          updatedAt: new Date().toISOString(),
+        }, null, 2),
+      );
+    })().catch((error: unknown) => logger.warn("[wps-bot] .wps_context.json 落盘失败:", error));
     return wrap(chatId);
   }
 

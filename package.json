@@ -28,7 +28,9 @@
     "cordis.patch.yml",
     "examples/wps-bot.cordis.yml",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "skills",
+    "scripts/wps-chat.mjs"
   ],
   "scripts": {
     "test": "node --test test/*.test.ts",
