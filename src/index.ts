@@ -23,6 +23,7 @@ import {
 } from "./protocol.ts";
 import type { ChatSessionHandle } from "./dispatch.ts";
 import { parseTaskKey } from "./task-keys.ts";
+import { appendApprovalAudit } from "./audit.ts";
 import {
   WpsBotCore,
   type CoreBotOptions,
@@ -463,7 +464,9 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
       registerChannelTools(toolsRegistry, (kind, chatId, text) =>
         kind === "finish" ? owned.noteFinishTask(chatId, text) : owned.noteReply(chatId, text),
       (agent) => chatForAgent(agent));
-      logger.info("[wps-bot] finish_task/reply 通道工具已注册");
+      registerHistoryTool(toolsRegistry, owned, (agent) => chatForAgent(agent), (entry) =>
+        appendApprovalAudit(config.auditPath ?? "runtime/wps-bot-approval.jsonl", entry));
+      logger.info("[wps-bot] finish_task/reply/search_wps_history 通道工具已注册");
     } else {
       logger.warn("[wps-bot] tools 服务未挂载——finish_task/reply 缺位");
     }
@@ -511,6 +514,52 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
 }
 
 /** P-A:finish_task/reply 的注册面（defineTool 形构最小集——不具有也降级 warn）。 */
+/** P-D：search_wps_history——同 chat 读开归档检索；每次调用 allby 读审计行。 */
+function registerHistoryTool(
+  registry: { register?: (tool: unknown) => void },
+  owned: WpsBotCore,
+  chatForAgent: (agent: unknown) => string | null,
+  auditAppend: (entry: import("./audit.ts").ApprovalAuditEntry) => Promise<void>,
+): void {
+  const defineTool = (opts: Record<string, unknown>) => opts;
+  registry.register?.(defineTool({
+    name: "search_wps_history",
+    description: "检索本对话（群/p2p）的聊天历史归档，按关键词面出最近条目；历史为读开素材，不做私权。",
+    parameters: {
+      query: { type: "string", required: true, description: "关键词（空白分隔，任一命中即出件）。" },
+      limit: { type: "number", default: 5, description: "最多返回条数（上限 20）。" },
+    },
+    output: {
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          hits: { type: "array", items: { type: "string" }, default: [] },
+        },
+      },
+      render: (_args: unknown, value: unknown) => [{ type: "text", text: JSON.stringify(value) }],
+    },
+    async execute(args: { query: string; limit?: number }, exec: { agent?: unknown }) {
+      const sessionId = chatForAgent(exec.agent);
+      const chatId = sessionId !== null ? (parseTaskKey(sessionId)?.chatId ?? sessionId) : null;
+      if (chatId === null) return { hits: [] };
+      const hits = await owned.searchHistory(chatId, String(args.query), Math.min(20, Math.max(1, args.limit ?? 5)));
+      // P-D 读审计：检索动作照同组审计行载账
+      await auditAppend({
+        timestamp: Math.floor(Date.now() / 1000),
+        kind: "decision",
+        auditOutcome: "decision",
+        chatId,
+        userId: sessionId ?? chatId,
+        approved: true,
+        reason: `search_wps_history q=?${args.query}?`,
+        feedback: hits.length > 0 ? `hits=${hits.length}` : "empty",
+      }).catch(() => undefined);
+      return { hits: hits.map((h) => `[${new Date(h.ts * 1000).toISOString()}] ${h.senderName}: ${h.text}`) };
+    },
+  } as never));
+}
+
 function registerChannelTools(
   registry: { register?: (tool: unknown) => void },
   act: (kind: "finish" | "reply", chatId: string, text: string) => Promise<void> | void,

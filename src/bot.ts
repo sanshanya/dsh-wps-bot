@@ -9,8 +9,8 @@
  */
 
 import { createHash } from "node:crypto";
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { basename, join, resolve, sep } from "node:path";
+import { appendFile as appendFileSafe, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { basename, dirname as pathDirname, join, resolve, sep } from "node:path";
 
 import { WpsClient, type Mention } from "./client.ts";
 import { ProgressCards } from "./card.ts";
@@ -251,6 +251,8 @@ export class WpsBotCore {
    */
   async handleIncomingEvent(ev: WpsEvent): Promise<Route | "approval-reply" | "duplicate"> {
     if (!this.router.claimLock(ev.eventId)) return "duplicate"; // 幂等均垫
+    // P-D：群历史读开底账——inbound 全件归档（含 drop；检索工具唯一数据源）
+    void this.recordHistory(ev).catch((error) => this.logger.warn("[wps-bot] history 落盘失败:", error));
     // 审批答允（any-of）：pending 允集(owner∪participants)含发送者且同 chat → 原子消费
     const sameChat = (sessionId: string) => (parseTaskKey(sessionId)?.chatId ?? sessionId) === ev.chatId;
     for (const [sessionId, pend] of this.pendings) {
@@ -291,6 +293,61 @@ export class WpsBotCore {
   }
 
   /** R4：unparsed/cloud_docs/shared_doc_ids 三路 JSONL 落盘；路径经 observations 进 prompt。 */
+  /** P-D history 归档（读开历史底账；不参与 act，只进检索）。 */
+  private historyFile(chatId: string): string {
+    return join(this.cfg.workspaceRoot, "history", chatId, "history.jsonl");
+  }
+  private async recordHistory(ev: WpsEvent): Promise<void> {
+    const file = this.historyFile(ev.chatId);
+    await mkdir(pathDirname(file), { recursive: true });
+    await appendFileSafe(
+      file,
+      JSON.stringify({
+        ts: Math.floor(Date.now() / 1000),
+        eventId: ev.eventId,
+        senderUserId: ev.senderId,
+        senderName: ev.senderName,
+        chatType: ev.chatType,
+        quoteMsgId: ev.quoteMsgId.length > 0 ? ev.quoteMsgId : undefined,
+        text: ev.text.slice(0, 500),
+        attachments: ev.attachments.map((a) => a.name).filter(Boolean),
+      }) + "\n",
+    );
+  }
+  /** P-D 搜索面：同 chat 归档按关键词面出最近 N 条（读开——同群成员群问皆可见的素材面）。 */
+  async searchHistory(
+    chatId: string,
+    query: string,
+    limit = 5,
+  ): Promise<Array<{ ts: number; senderName: string; senderUserId: string; text: string }>> {
+    let raw = "";
+    try {
+      raw = await readFile(this.historyFile(chatId), "utf8");
+    } catch {
+      return [];
+    }
+    const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
+    const out: Array<{ ts: number; senderName: string; senderUserId: string; text: string }> = [];
+    const lines = raw.split("\n").filter((l) => l.trim().length > 0);
+    for (let i = lines.length - 1; i >= 0 && out.length < limit; i--) {
+      try {
+        const e = JSON.parse(lines[i] as string) as { ts?: number; senderName?: string; senderUserId?: string; text?: string };
+        const hay = `${e.text ?? ""} ${e.senderName ?? ""}`.toLowerCase();
+        if (terms.length === 0 || terms.some((t) => hay.includes(t))) {
+          out.unshift({
+            ts: Number(e.ts ?? 0),
+            senderName: String(e.senderName ?? ""),
+            senderUserId: String(e.senderUserId ?? ""),
+            text: String(e.text ?? ""),
+          });
+        }
+      } catch {
+        // 坏行跳过
+      }
+    }
+    return out;
+  }
+
   private async recordEvidence(ev: WpsEvent): Promise<void> {
     const base = { chatId: ev.chatId, eventId: ev.eventId };
     const lines: string[] = [];

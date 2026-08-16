@@ -972,3 +972,21 @@ test("P-A：finish_task 登记优先交付；reply 过的 turn 不重复发末�
   await SLEEP(60);
   assert.ok(client.splits.some((m) => m.text.includes("回落文本")));
 });
+
+test("P-D：inbound 全件归档 + searchHistory 同 chat 检索（读开历史底账）", async (t) => {
+  const rig = makeRig();
+  t.after(async () => { await rig.core.shutdown(); await rig.cleanup(); });
+  await rig.core.handleIncomingEvent(ev({ senderName: "冯三山", text: "备份服务器 10.0.0.8 的周巡检还差一栏", chatType: "group" }));
+  await rig.core.handleIncomingEvent(ev({ senderId: "u9", senderName: "李四", text: "巡检我已经补完", chatType: "group" }));
+  await new Promise((r) => setTimeout(r, 30));
+
+  const hits = await rig.core.searchHistory("c1", "巡检");
+  assert.ok(hits.length >= 2);
+  assert.equal(hits[0]!.text.includes("巡检"), true);
+  // 空白 q 也得出（=最近回看）
+  const recent = await rig.core.searchHistory("c1", "", 1);
+  assert.equal(recent.length, 1);
+  assert.equal(recent[0]!.senderName, "李四");
+  // 别 chat 互相隔离
+  assert.equal((await rig.core.searchHistory("c2", "巡检")).length, 0);
+});
