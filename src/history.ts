@@ -7,6 +7,7 @@
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { WpsEvent } from "./protocol.ts";
+import { sanitizePathKey } from "./task-keys.ts";
 
 export interface HistoryHit {
   ts: number;
@@ -25,7 +26,7 @@ export class HistoryStore {
   }
 
   private fileOf(chatId: string): string {
-    return join(this.workspaceRoot, "history", chatId, "history.jsonl");
+    return join(this.workspaceRoot, "history", sanitizePathKey(chatId), "history.jsonl");
   }
 
   async record(ev: WpsEvent): Promise<void> {
@@ -70,7 +71,7 @@ export class HistoryStore {
         const e = JSON.parse(lines[i] as string) as Partial<HistoryHit>;
         const hay = `${e.text ?? ""} ${e.senderName ?? ""}`.toLowerCase();
         if (terms.length === 0 || terms.some((t) => hay.includes(t))) {
-          out.unshift({
+          out.push({
             ts: Number(e.ts ?? 0),
             senderName: String(e.senderName ?? ""),
             senderUserId: String(e.senderUserId ?? ""),

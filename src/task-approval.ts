@@ -17,7 +17,7 @@ export const ACK_DECLINED = "操作已取消，意见将交给模型继续处理
 export const ACK_TIMEOUT = "审批超时未获答复，本次操作已取消。";
 
 export function ackApprovedWindow(n: number): string {
-  return `已开启 ${n} 分钟自动同意窗口——窗口对本对话中您本人发起的后续确认操作生效。`;
+  return `已开启 ${n} 分钟自动同意窗口——窗口对本任务内您本人发起的后续确认操作生效。`;
 }
 
 export function allowsWindowForReason(reason: string | undefined): boolean {
@@ -42,7 +42,7 @@ export type ApprovalOutcome = "allowed-once" | "rejected" | "cancelled" | "unava
 
 export function approvalQuestion(review: string, allowWindow: boolean): string {
   const instruction = allowWindow
-    ? "回复“同意”仅执行本次；回复“同意5分钟”（分钟数可替换）开启限时自动同意——窗口对本对话中您本人发起的后续所有待确认操作生效。"
+    ? "回复“同意”仅执行本次；回复“同意5分钟”（分钟数可替换）开启限时自动同意——窗口对本任务内您本人发起的后续所有待确认操作生效。"
     : "本次仅支持回复“同意”执行一次，不开放限时自动同意。";
   return `**需要确认的操作**\n\n${instruction}\n\n${review}`;
 }

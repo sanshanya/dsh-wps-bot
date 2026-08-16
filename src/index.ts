@@ -22,7 +22,7 @@ import {
   type WpsEvent,
 } from "./protocol.ts";
 import type { ChatSessionHandle } from "./task-router.ts";
-import { parseTaskKey } from "./task-keys.ts";
+import { parseTaskKey, sanitizePathKey } from "./task-keys.ts";
 import { appendApprovalAudit } from "./audit.ts";
 import { defineTool as realDefineTool } from "@deepseek-ai/dsh-tools";
 import { registerChannelTools, registerHistoryTool } from "./channel-tools.ts";
@@ -64,6 +64,7 @@ export interface WpsBotConfig {
   ackInterventionText?: string;
   shutdownDeadlineSeconds?: number;
   channelQuestionProvider?: boolean;
+  strictFinishContract?: boolean;
   deliverChunks?: number;
 }
 
@@ -94,6 +95,8 @@ export const Config: Schema<WpsBotConfig> = Schema.object({
   shutdownDeadlineSeconds: Schema.number().default(10),
   /** 通道代答 user-questions provider 主见位单（默认不抢主；apiproxy 在场时保持 apiproxy）。 */
   channelQuestionProvider: Schema.boolean().default(false),
+  /** 严格完结契约（PROJECT 契约案）：true=无 finish_task 不落交付。 */
+  strictFinishContract: Schema.boolean().default(false),
   deliverChunks: Schema.number().default(4500),
 });
 
@@ -254,7 +257,12 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
     const sessionId = SessionId(parseTaskKey(chatId) !== null ? chatId : `wps-bot:${chatId}`);
     const taskParts = parseTaskKey(chatId);
     const cwd = taskParts !== null
-      ? join(config.workspaceRoot || process.cwd(), taskParts.chatId, taskParts.ownerId, taskParts.taskId)
+      ? join(
+          config.workspaceRoot || process.cwd(),
+          sanitizePathKey(taskParts.chatId),
+          sanitizePathKey(taskParts.ownerId),
+          sanitizePathKey(taskParts.taskId),
+        )
       : (config.workspaceRoot || process.cwd());
     const handle = (await createOrResume(ctx.agents, {
       sessionId,
@@ -333,6 +341,7 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
         // workspaceRoot 与 agents.create 的 cwd 同源：downloads/artifacts 都在会话工作区下
         workspaceRoot: config.workspaceRoot || process.cwd(),
         shutdownDeadlineMs: (config.shutdownDeadlineSeconds ?? 10) * 1000,
+        strictFinishContract: config.strictFinishContract,
       },
     };
     return new WpsBotCore(opts);
@@ -444,42 +453,26 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
     const userQuestions = (ctx as unknown as {
       userQuestions?: { registerProvider?: (p: unknown) => () => void };
     }).userQuestions;
-    if (core !== null && config.channelQuestionProvider === true && userQuestions?.registerProvider !== undefined) {
-      const owned = core;
-      try {
-        userQuestions.registerProvider({
-          ask: (request: unknown) => owned.askUserQuestion(request as Parameters<typeof owned.askUserQuestion>[0]),
-        });
-        logger.info("[wps-bot] user-questions provider 已注册");
-      } catch (error) {
-        // cordis 单主面：apiproxy 已注册（广播面）时降级——通道代答不抢主；
-        // 现行组合本不挂 tool-ask-user，问面空转自洽（PROFILE.md 已登记）
-        if ((error as { code?: string }).code === "DUPLICATE_PROVIDER") {
-          logger.warn("[wps-bot] user-questions provider 已有主（apiproxy 广播面）——通道代答跳过");
-        } else {
-          throw error;
+    if (core !== null && config.channelQuestionProvider === true) {
+      if (userQuestions?.registerProvider === undefined) {
+        logger.warn("[wps-bot] channelQuestionProvider=true 但 userQuestions 服务未挂载——provider 不注册");
+      } else {
+        const owned = core;
+        try {
+          userQuestions.registerProvider({
+            ask: (request: unknown) => owned.askUserQuestion(request as Parameters<typeof owned.askUserQuestion>[0]),
+          });
+          logger.info("[wps-bot] user-questions provider 已注册");
+        } catch (error) {
+          if ((error as { code?: string }).code === "DUPLICATE_PROVIDER") {
+            logger.warn("[wps-bot] user-questions provider 已有主（apiproxy 广播面）——通道代答跳过");
+          } else {
+            throw error;
+          }
         }
       }
-    } else {
-      logger.warn("[wps-bot] userQuestions 服务未挂载——ask_user_question 将报错（组合层补挂 dsh-user-questions）");
     }
-
-    // P-A：finish_task/reply 通道工具注册（tools 服务缺席时 warn 降级——persona 契约仍可通过提示词走）
-    const toolsRegistry = (ctx as unknown as {
-      tools?: { register?: (tool: unknown) => void };
-    }).tools;
-    if (core !== null && toolsRegistry?.register !== undefined) {
-      const owned = core;
-      registerChannelTools(toolsRegistry, (kind, chatId, text) =>
-        kind === "finish" ? owned.noteFinishTask(chatId, text) : owned.noteReply(chatId, text),
-      (agent) => chatForAgent(agent));
-      registerHistoryTool(toolsRegistry, owned, (agent) => chatForAgent(agent), (entry) =>
-        appendApprovalAudit(config.auditPath ?? "runtime/wps-bot-approval.jsonl", entry));
-      logger.info("[wps-bot] finish_task/reply/search_wps_history 通道工具已注册");
-    } else {
-      logger.warn("[wps-bot] tools 服务未挂载——finish_task/reply 缺位");
-    }
-
+    // flag false（默认）=有意不注册（apiproxy 广播活在场）——静默正确
     eventClient = factory({ appId: clientId, appSecret: clientSecret, dispatcher });
     // 观测锚点必须先行：open-event-sdk 1.0.1 的 start() 在连接存活期间不 resolve——
     // 放 await 后 = 永不打印，stop 时反补一条假信号（二度报告 §三.8 实证）。

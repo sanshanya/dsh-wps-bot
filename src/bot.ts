@@ -21,7 +21,7 @@ import { EvidenceStore } from "./evidence.ts";
 import { QuoteRegistry } from "./quote-registry.ts";
 import { parseTaskKey } from "./task-keys.ts";
 import { HistoryStore } from "./history.ts";
-import { TaskDeliveryService, safeArtifactName } from "./task-delivery.ts";
+import { TaskDeliveryService, safeArtifactName, taskRootOf } from "./task-delivery.ts";
 import { TaskApprovalService } from "./task-approval.ts";
 import { ACK_APPROVED, ACK_APPROVED_NO_WINDOW, ACK_DECLINED, ACK_TIMEOUT, ackApprovedWindow, allowsWindowForReason, type ReplyEvent } from "./task-approval.ts";
 import { TaskQuestionsService } from "./task-questions.ts";
@@ -346,9 +346,8 @@ export class WpsBotCore {
     if (withKey.length === 0) return;
     // P-C：task 写作隔离 —— downloads 落在目标任务工作区；会话未建时回根任务键
     const taskKey = this.router.previewTarget(ev) ?? `wps-bot:${ev.chatId}:${ev.senderId}:${ev.eventId}`;
-    const keyParts = taskKey.split(":");
     const digest = createHash("sha256").update(ev.eventId, "utf8").digest("hex").slice(0, 12);
-    const dir = join(this.cfg.workspaceRoot, keyParts[1] ?? ev.chatId, keyParts[2] ?? ev.senderId, keyParts[3] ?? ev.eventId, "downloads", digest);
+    const dir = join(taskRootOf(this.cfg.workspaceRoot, taskKey), "downloads", digest);
     await mkdir(dir, { recursive: true });
     let index = 0;
     for (const attachment of withKey) {
@@ -520,6 +519,7 @@ export class WpsBotCore {
   }
 
   /** G3：中断通知——模板对位 ga_wps/app.py:430-435；幂等 + 群聊 mention 尽力 + 文案不泄异常串。 */
+  /** Y2-5 姊妹路：入参总能是 sessionKey——receiver 一律经同一 parse 缝。 */
   async notifyInterrupted(chatId: string, reason: Parameters<typeof interruptionNotice>[0], key?: string): Promise<void> {
     if (!this.interruptionLedger.claim(key ?? `${chatId}:${reason}`)) return;
     const requester = this.sessions.getRequester(chatId);
@@ -528,7 +528,7 @@ export class WpsBotCore {
         ? null
         : await this.client.resolveMention(requester.userId, requester.name).catch(() => null);
     try {
-      await this.client.sendMarkdownSplit(chatId, interruptionNotice(reason, chatId), mention);
+      await this.client.sendMarkdownSplit(parseTaskKey(chatId)?.chatId ?? chatId, interruptionNotice(reason, chatId), mention);
     } catch (error) {
       this.logger.warn("[wps-bot] interruption notice failed:", error);
     }
@@ -542,7 +542,7 @@ export class WpsBotCore {
   /** reply 工具即时发群 + 标记本 turn 已答复（末态文本不再重发）。 */
   async noteReply(chatId: string, text: string): Promise<void> {
     this.repliedTurn.set(chatId, this.currentTurn.get(chatId) ?? 0);
-    await this.client.sendMarkdownSplit(chatId, text, null, this.cfg.deliverChunks);
+    await this.client.sendMarkdownSplit(parseTaskKey(chatId)?.chatId ?? chatId, text, null, this.cfg.deliverChunks);
   }
 
   pendingCount(): number {

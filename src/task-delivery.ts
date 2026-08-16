@@ -6,7 +6,7 @@
 
 import { readFile, stat } from "node:fs/promises";
 import { basename, resolve, sep } from "node:path";
-import { parseTaskKey } from "./task-keys.ts";
+import { parseTaskKey, sanitizePathKey } from "./task-keys.ts";
 
 export const ATTACH_MARKER = /\[\[attach:([^\]]+)\]\]/g;
 
@@ -22,7 +22,12 @@ export function safeArtifactName(name: string): string {
 export function taskRootOf(workspaceRoot: string, sessionIdOrChat: string): string {
   const parsed = parseTaskKey(sessionIdOrChat);
   if (parsed === null) return resolve(workspaceRoot);
-  return resolve(workspaceRoot, parsed.chatId, parsed.ownerId, parsed.taskId);
+  return resolve(
+    workspaceRoot,
+    sanitizePathKey(parsed.chatId),
+    sanitizePathKey(parsed.ownerId),
+    sanitizePathKey(parsed.taskId),
+  );
 }
 
 export interface ArtifactExtraction {

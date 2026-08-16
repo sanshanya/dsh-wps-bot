@@ -18,6 +18,8 @@ interface Record_ {
 const MAX_AGE_MS = 7 * 24 * 3600 * 1000;
 const MAX_COUNT = 2000;
 
+let persistSeq = 0;
+
 export class QuoteRegistry {
   private readonly byId = new Map<string, Record_>();
 
@@ -74,7 +76,8 @@ export class QuoteRegistry {
     this.byId.clear();
     for (const rec of kept) this.byId.set(rec.botMessageId, rec);
     await mkdir(dirname(this.path), { recursive: true });
-    const tmp = `${this.path}.fine.${process.pid}.tmp`;
+    // Y2-4：tmp 名唯一化（pid+atomicseq——多任务并发 persist 不撞名；同 dedup.compact 先例）
+    const tmp = `${this.path}.fine.${process.pid}.${++persistSeq}.tmp`;
     await writeFile(tmp, kept.map((r) => JSON.stringify(r)).join("\n") + "\n", "utf8");
     const { rename } = await import("node:fs/promises");
     await rename(tmp, this.path);

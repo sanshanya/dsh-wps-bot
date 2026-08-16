@@ -26,6 +26,9 @@ export function registerHistoryTool(
       query: { type: "string", required: true, description: "关键词（空白分隔，任一命中即出件）。" },
       limit: { type: "number", default: 5, description: "最多返回条数（上限 20）。" },
       chat_id: { type: "string", default: "", description: "可选：跨群读开——精确 chat id；缺省=当前对话。" },
+      user_id: { type: "string", default: "", description: "可选：只看某发送者的条目（senderUserId 精确匹）。" },
+      since: { type: "number", default: 0, description: "可选：epoch 秒下限（含）。" },
+      until: { type: "number", default: 0, description: "可选：epoch 秒上限（含）。" },
     },
     output: {
       schema: {
@@ -35,18 +38,28 @@ export function registerHistoryTool(
       },
       render: (_args: unknown, value: unknown) => [{ type: "text", text: JSON.stringify(value) }],
     },
-    async execute(args: { query: string; limit?: number; chat_id?: string }, exec: { agent?: unknown }) {
+    async execute(
+      args: { query: string; limit?: number; chat_id?: string; user_id?: string; since?: number; until?: number },
+      exec: { agent?: unknown },
+    ) {
       const sessionId = chatForAgent(exec.agent);
       const chatId = sessionId !== null ? (parseTaskKey(sessionId)?.chatId ?? sessionId) : null;
       if (chatId === null) return { hits: [] };
       const targetChat = typeof args.chat_id === "string" && args.chat_id.length > 0 ? args.chat_id : chatId;
-      const hits = await owned.searchHistory(targetChat, String(args.query), Math.min(20, Math.max(1, args.limit ?? 5)));
+      const since = typeof args.since === "number" ? args.since : 0;
+      const until = typeof args.until === "number" ? args.until : 0;
+      const rawHits = await owned.searchHistory(targetChat, String(args.query), 40);
+      const hits = rawHits
+        .filter((h) => (args.user_id === undefined || args.user_id === "" ? true : h.senderUserId === args.user_id))
+        .filter((h) => (since > 0 ? h.ts >= since : true))
+        .filter((h) => (until > 0 ? h.ts <= until : true))
+        .slice(0, Math.min(20, Math.max(1, args.limit ?? 5)));
       await auditAppend({
         timestamp: Math.floor(Date.now() / 1000),
         kind: "decision",
         auditOutcome: "decision",
         chatId: targetChat,
-        userId: sessionId ?? chatId,
+        userId: (sessionId !== null ? (parseTaskKey(sessionId)?.ownerId ?? sessionId) : chatId),
         approved: true,
         reason: `search_wps_history q=?${args.query}?`,
         feedback: hits.length > 0 ? `hits=${hits.length}` : "empty",
