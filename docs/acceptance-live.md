@@ -27,9 +27,17 @@
 
 超时旁路：3 分钟无人答 → 群内「审批超时未获答复，本次操作已取消。」
 
-## 验收后清点
+## 验收后清点（2026-08-16 实测全绿）
 
-- [ ] `runtime/wps-bot-approval.jsonl` 有 allowed-once + 窗行
-- [ ] `.sessions/` 有 `wps-bot:91793929` 持久线
-- [ ] 宿主日志无 ERROR；侧车 `ws-frames.jsonl` 帧件与原文明文对撞
-- [ ] README「真实联通自证」打钩 + 本文件补实测日期行
+- [x] 场景1 文本问答：04-15 17:54 三句话总结真交付（model ep-m-20260424154710-ggz8h，read README 工具调用实证）
+- [x] 场景2 进度卡：每次任务 sp card 出现+终态 recall；心跳 updateCard 经 spy/drill 实证
+- [x] 场景3 限时审批窗：04:17:19→35 全链 16s——群问→「同意5分钟」→ **单条**回执（settled guard）→ audit `approved:true grantMinutes:5` → `C:\Temp\hello.txt` 落盘「test」
+- [x] `.sessions/` 有 `wps-bot:91793929` 持久线；宿主 stderr 零 ERROR
+- [x] 真机级回归四件固化：loader default/inject、WS 单播律、答允幂等、dispose 序
+- [ ] U1 断网重放窗口 / U2 GUI secret 渲染（发版闸，未测）
+
+## 实测中暴露并已修的对接面事故（教训登记）
+
+1. loader `unwrapExports` default 遮蔽 inject（b64ba80→修复）；
+2. WS 单播律：多连接=随机丢消息（04:10 事故；答允帧被侧车吃掉、重发任务被当答允拒）——**生产同 SP 同时只允许一条入站连接**；
+3. 答允幂等：迟来答复副本不得双发 ack/audit（`1eaa6d8` settled guard）。
