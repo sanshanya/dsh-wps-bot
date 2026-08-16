@@ -1,16 +1,5 @@
 /**
- * WPS 通道分诊器（dispatch router）。
- *
- * 逐行迁移 ksbot_ga/src/ga_wps/app.py 的核心分诊语义：
- *  - 幂等 claim/record/release（dedup.ts 同款 seen_events 定式）
- *  - 卡片/回复 gate：quote 命中进行中任务且非 direct → 丢弃；
- *    未 @ 且未引用最近任务的群消息 → 丢弃（GA：普通未 @ 群消息不进模型）
- *  - direct + 运行中 + 无 evidence → 注入当轮（GA intervention seam）+ ack；
- *    evidence_bearing（附件/云文档/shared_doc_ids/unparsed）永不走注入，一律落队
- *  - 落队按 chat FIFO；同 chat 串行、跨 chat 并行（GA _drain_chat 同构）
- *  - requester/chat 作为本轮事实进模型；event id 不入模型
- *
- * 不依赖 cordis / dsh-*：session 抽象由宿主注入（dsh-wps-bot/index.ts 转化为 agent.followup/inject）。
+ * WPS 通道分诊器（dispatch router）。考古锚点见 docs/references.md。
  *
  * @module dsh-wps-bot/dispatch
  */

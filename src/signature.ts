@@ -1,15 +1,5 @@
 /**
- * WPS 365 请求签名（KSO-1）。
- *
- * 逐行对照 ksbot_ga/src/ga_wps/client.py:232-245：
- *   digest = sha256hex(body) or ""
- *   signing = f"KSO-1{method.upper()}{uri}application/json{date}{digest}"
- *   signature = hmac_sha256(client_secret, signing).hex
- * 请求头面：
- *   Content-Type: application/json
- *   X-Kso-Date: <RFC1123 GMT>
- *   X-Kso-Authorization: KSO-1 <clientId>:<signature>
- *   Authorization: Bearer <access_token>
+ * WPS 365 请求签名（KSO-1）。考古锚点见 docs/references.md。
  *
  * @module dsh-wps-bot/signature
  */

@@ -1,8 +1,5 @@
 /**
- * 中断/终态通知族——GA ga_wps/app.py:425-435 `_notify_interruption` 逐字对位。
- *
- * 三类原因 → 三段 detail；联署「对话 ID：全角冒号 + 已发起的外部操作不会自动回滚」。
- * 内部异常串永不对外泄露（GA 同纪律：detail 是固定文案，不拼栈）。
+ * 中断/终态通知族。考古锚点见 docs/references.md。
  *
  * @module dsh-wps-bot/notify
  */

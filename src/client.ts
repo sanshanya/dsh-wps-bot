@@ -1,19 +1,5 @@
 /**
- * WPS 365 客户端：认证、加签、错误包装、消息/卡片收发、mention 解析。
- *
- * 逐行迁移 ksbot_ga/src/ga_wps/client.py：
- *  - _access_token    （oauth2/client_credentials + 过期前 300s 提前刷新）
- *  - _headers        （KSO-1 签名 + Bearer）
- *  - _ok / _error_fields / _message_id / _data
- *  - send_markdown / send_card / update_card / recall_message / send_markdown_split
- *  - resolve_mention
- *  - send_markdown_split 的 mention 只带首段、at_tag(1) 语义
- *  - download_attachment（/resources/{storage_key}/download → 裸 GET presigned url）
- *  - upload_file（两段：/chats/resources/upload 分配 sha256 → upload_entry PUT → /messages/create）
- *  - _image_dimensions（PNG/GIF/JPEG 头解析）
- *  - _transfer（裸传输；GET 不带 body，非加签面）
- *
- * 与 GA 的差异仅为实现语言（fetch 替 requests），所有 wire 面保持一致。
+ * WPS 365 客户端：认证、加签、消息/卡片/附件、历史上拉。考古锚点见 docs/references.md。
  *
  * @module dsh-wps-bot/client
  */

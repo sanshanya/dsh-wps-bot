@@ -1,8 +1,5 @@
 /**
- * 审批同意解析 + 限时窗口（纯逻辑）。
- *
- * 逐行迁移 ksbot_ga/src/ga_wps/approval.py:15-25（_CONSENT / parse_consent）
- * 与 :40-118（窗口键 (chat,user)、到期清、重启清除是纯内存语义）。
+ * 审批同意解析 + 限时窗口（纯逻辑）。考古锚点见 docs/references.md。
  *
  * @module dsh-wps-bot/consent
  */

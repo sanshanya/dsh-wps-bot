@@ -1,11 +1,5 @@
 /**
- * 事件幂等（seen_events 定式）——逐行对位 ksbot_ga/src/ga_wps/app.py:30-90。
- *
- * claim("")         空 event_id 直接放行（GA 不做空 id 剪枝）
- * record("")        空 event_id 直接视为 accepted（no-op）
- * claim(x) → record(x) → 之后同 id 的 record/claim 全部拒（at-most-once）
- * release(x)        只撤 in-flight，不接触 ids（GA 语义；claim 进 ids 的通道是 record）
- * 持久化 JSONL {"event_id","seen_at"}；每个 limit 次写入触发一次文件重建压缩。
+ * 事件幂等（seen_events 定式）。考古锚点见 docs/references.md。
  *
  * @module dsh-wps-bot/dedup
  */
@@ -125,10 +119,10 @@ export class EventDedup {
       await writeFile(tmpPath, body, "utf8");
       await rename(tmpPath, this.path);
     } finally {
-      // 防御防卫合：跨警讯间 rename 的半途失败不误不被收集为残留
+      // 任意半途失败不残留临时件
       try {
         await import("node:fs/promises").then((fs) => fs.rm(tmpPath, { force: true }));
-      } catch { /* 邹幽静 */ }
+      } catch { /* 静默 */ }
     }
     this.writes = 0;
   }

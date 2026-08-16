@@ -1,12 +1,5 @@
 /**
- * Markdown 分段（长度上限契约）。
- *
- * 逐行迁移 ksbot_ga/src/ga_wps/client.py:97-112 的 _split(text, limit=4500)：
- *  - CRLF 归一为 LF
- *  - 按 \n\n 切自然段，strip 去空段
- *  - 单段超限：先结清在装段，再把超限段按 limit 硬切
- *  - 多段贪心装填
- *  - 全文空 → [""]
+ * Markdown 分段（长度上限契约）。考古锚点见 docs/references.md。
  */
 
 export function splitMarkdown(text: string, limit = 4500): string[] {

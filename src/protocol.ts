@@ -1,17 +1,5 @@
 /**
- * WPS 365 事件 canonical 化（wire 面）—— 双源对齐：
- *   ├── ksbot_ga/src/ga_wps/protocol.py:132-370（生产可证的 parser）
- *   └── wps-docs/docs/server/message/（官方面）
- *
- * 真值要点（修正此前按 SDK .d.ts 假造的差异）：
- *  1. message.content.text 是 { content: string }——.d.ts 的「text: string」是名不副实的
- *  2. mentions[].id 是「@ 索引」字符串（"1","2"…），identity.id / identity.app_id 才是被 @ 实体的真 id
- *  3. sender.type ∈ {user, sp, app, unknown}——bot 自产消息的 sender.id == spId
- *  4. bot 被 @ 的检测双通道：
- *     A. mentions[].identity.type ∈ {sp, app} 且 identity.id/app_id 命中 botIds（GA 主链）
- *     B. 文本中的 <at id="N">甘小雨</at> 按 botDisplayName 字面兜底匹配（GA 生产真机的另一路）
- *  5. rich_text 中的元素按 GA 的 vortex 识别（text/mention/doc/image/sticker/custom_emoji/line_break）
- *  6. file.cloud + file.local 分途（GA document()）；matured image/audio/video 走 media() 的 storage_key 必填
+ * WPS 365 事件 canonical 化（wire 面）。考古锚点见 docs/references.md（本表 protocol 行）。
  *
  * @module dsh-wps-bot/protocol
  */

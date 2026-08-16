@@ -1,12 +1,5 @@
 /**
- * 进度卡片（Runtime 旁路状态机）。
- *
- * 逐行迁移 ksbot_ga/src/ga_wps/progress.py:59-204 + ksbot-dsh/channel/wps_channel/progress_adapter.py：
- *  - 生命周期 at-most-one 卡片：start → 首次更新延迟 → 轮次/工具/审批相位 → 完结收口
- *  - 短任务零交互（initial_delay 内 finish → 从不发送）
- *  - 卡片正文稳定模板「已收到，正在处理。/心跳/轮次/工具」
- *  - GA 措辞：心跳：{elapsed_text}，{activity_text}；状态行轮次/工具
- *  - settle 默认 recall（GA 收口行为；WPS 撤回有系统通知——由 config 控制可选 keep）
+ * 进度卡片（Runtime 旁路状态机）。考古锚点见 docs/references.md。
  *
  * @module dsh-wps-bot/card
  */
@@ -119,7 +112,7 @@ export class ProgressCards {
     const state = this.states.get(chatId);
     if (state === undefined) return;
     state.lastActivity = Date.now() / 1000;
-    // GA _TURN：turn 换到时清上历 tool（之前留在旧工具上）
+    // GA _TURN：turn 换到时清上一轮 tool（之前留在旧工具上）
     if (typeof phase.turn === "number" && Number.isFinite(phase.turn)) {
       state.turn = phase.turn;
       state.tool = "";
@@ -195,7 +188,7 @@ export class ProgressCards {
       renderCard(state, Date.now() / 1000),
       this.opts.title,
     );
-    // 检查 sendCard 结束后该 chat 状态是否仍是同一个（中公被 finish 或 reopen 换掉的话不挂心跳）
+    // 检查 sendCard 结束后该 chat 状态是否仍是同一个（中途被 finish 或 reopen 换掉的话不挂心跳）
     const live = this.states.get(chatId);
     if (live !== state || state.done) {
       try { await this.opts.client.recallMessage(messageId); } catch { /* 静默 */ }

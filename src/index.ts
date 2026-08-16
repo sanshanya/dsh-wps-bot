@@ -1,8 +1,5 @@
 /**
- * dsh-wps-bot —— WPS 365 聊天通道（cordis 宿主插件）。
- *
- * 本文件只做 cordis 接线（schema、agents.create、ctx.on、ctx.effect、boot 过程、
- * open-event-sdk 长连接）；所有可测语义都在 ./bot.ts（WpsBotCore）与各纯模块。
+ * dsh-wps-bot —— WPS 365 聊天通道（cordis 宿主插件）：本文件只做接线（schema/agents/事件/teardown），可测语义在 ./bot.ts 与各纯模块。考古锚点见 docs/references.md。
  *
  * @module dsh-wps-bot
  */

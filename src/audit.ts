@@ -1,5 +1,5 @@
 /**
- * 审批记账 JSONL（与 ksbot_ga/src/ga_wps/approval.py:142-155 的 _audit 键面对齐）。
+ * 审批记账 JSONL。考古锚点见 docs/references.md。
  *
  * @module dsh-wps-bot/audit
  */
