@@ -6,6 +6,8 @@ WPS 365 聊天通道插件：把 DeepSeek Harness（dsh）的 Agent 从 WPS 群�
 - 上游形态：<https://github.com/sanshanya/ksbot_ga>
 - 社区同类参照：[dsh-im-hub](https://github.com/ThreeBody6666/dsh-im-hub)（打包形态）、[dsh-external/telegram](https://gitlab.com/dsh-external/telegram)（per-chat 会话骨架）、[dsh-lark-bot](https://gitlab.com/PlutoKeating/dsh-lark-bot)（交付粒度与发布物管控）
 
+设计契约（目标模型：会话=群×发起人×任务）与开发纪律见 [`docs/PROJECT.md`](docs/PROJECT.md) 与 [`docs/AGENT_RULES.md`](docs/AGENT_RULES.md)。
+
 ## GA 模块 → TS 模块对照
 
 | ksbot_ga | 本仓库 | 迁契约要点 |
