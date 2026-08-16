@@ -46,11 +46,19 @@ export type Route = "inject" | "enqueue" | "duplicate" | "drop";
 
 /** GA：requester/chat 作为本轮事实进模型；evidence 恒定供给（GA run_task 的 live-attachments 语用）。 */
 export function defaultFactify(ev: WpsEvent): string {
-  const head = `[WPS 任务 | chat ${ev.chatType || "group"}/${ev.chatId} | requester ${ev.senderName}(${ev.senderId})]`;
+  // A3-P0 防幻觉固定行：入群前历史对模型不可见——事实进模型，规则防编造
+  const head =
+    `[WPS 任务 | chat ${ev.chatType || "group"}/${ev.chatId} | requester ${ev.senderName}(${ev.senderId})]` +
+    "\n注意：bot 入群前的历史对你不可见；问到就明说，不要编造。";
   const parts: string[] = [];
   // GA live-attachments：已落盘附件给模型可读路径（materialize 先于分发并完成注入）
-  for (const a of ev.attachments)
+  for (const a of ev.attachments) {
     parts.push(a.localPath ? `附件 ${a.name || a.kind} → ${a.localPath}` : `附件 ${a.name || a.kind}（未落盘）`);
+    // A6-P0 明示降级：图片未进视觉链路（v1 不透传）——模型须明示“看不到图”
+    if (a.kind === "image") {
+      parts.push("注意：上述图片内容未进入视觉链路，仅有文件路径可用；不得声称看到了图。");
+    }
+  }
   for (const obs of ev.observations) parts.push(obs);
   if (ev.cloudDocLinks.length > 0) parts.push(`云文档 ${ev.cloudDocLinks.join(" ")}`);
   if (ev.unparsed.length > 0) parts.push(`未解析节点 ×${ev.unparsed.length}（非文本证据消息）`);

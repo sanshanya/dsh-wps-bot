@@ -16,7 +16,8 @@ import { WpsClient, type Mention } from "./client.ts";
 import { ProgressCards } from "./card.ts";
 import { ApprovalWindowStore, parseConsent, windowAllows } from "./consent.ts";
 import { appendApprovalAudit, autoAllowEntry, type ApprovalAuditEntry } from "./audit.ts";
-import { InterruptionLedger, interruptionNotice, reasonForTurnEnd } from "./notify.ts";
+import { detailFor, InterruptionLedger, interruptionNotice, reasonForTurnEnd } from "./notify.ts";
+import { EvidenceStore } from "./evidence.ts";
 import type { EventDedup } from "./dedup.ts";
 import type { WpsEvent } from "./protocol.ts";
 import { WpsRouter, type ChatSessionHandle, type Route } from "./dispatch.ts";
@@ -140,6 +141,13 @@ export class WpsBotCore {
   private readonly windows = new ApprovalWindowStore();
   private readonly pendings = new Map<string, PendingApproval>();
   private readonly interruptionLedger = new InterruptionLedger();
+  private evidenceStore: EvidenceStore | null = null;
+  private get evidence(): EvidenceStore {
+    this.evidenceStore ??= new EvidenceStore(this.cfg.workspaceRoot);
+    return this.evidenceStore;
+  }
+  private readonly lastDelivered = new Set<string>();
+  private readonly lastFailure = new Map<string, string>();
 
   /** P0-4：同 chatId 的单飞 ensure：两条并发 direct 不会为同一 sessionId 创交项。 */
   private async singleFlightEnsure(chatId: string): Promise<ChatSessionHandle> {
@@ -227,6 +235,8 @@ export class WpsBotCore {
     }
     // GA app.py:339：run 前 eager materialize——附件落盘先于分发/排队/注入
     // 二度报告 §五：materialize 抛错必须 release——否则 event_id 永远 in-flight（dedup 死位）
+    // R4 三落盘（先于 materialize;失败仅 warn 不阻断——证据面不劫持调度）
+    await this.recordEvidence(ev).catch((error) => this.logger.warn("[wps-bot] evidence 落盘失败:", error));
     try {
       await this.materializeAttachments(ev);
     } catch (error) {
@@ -234,6 +244,34 @@ export class WpsBotCore {
       throw error;
     }
     return this.router.handleEvent(ev, { preClaimed: true });
+  }
+
+  /** R4：unparsed/cloud_docs/shared_doc_ids 三路 JSONL 落盘；路径经 observations 进 prompt。 */
+  private async recordEvidence(ev: WpsEvent): Promise<void> {
+    const base = { chatId: ev.chatId, eventId: ev.eventId };
+    const lines: string[] = [];
+    if (ev.unparsed.length > 0) {
+      const path = await this.evidence.record(
+        "unparsed_content",
+        ev.unparsed.map((u) => ({ ...base, path: u.path, reason: u.reason, value: u.value })),
+      );
+      if (path !== null) lines.push(`未解析节点原文 → ${path}`);
+    }
+    if (ev.cloudDocLinks.length > 0) {
+      const path = await this.evidence.record(
+        "cloud_docs",
+        ev.cloudDocLinks.map((link) => ({ ...base, link })),
+      );
+      if (path !== null) lines.push(`云文档链接台账 → ${path}`);
+    }
+    if (ev.sharedDocIds.length > 0) {
+      const path = await this.evidence.record(
+        "shared_doc_ids",
+        ev.sharedDocIds.map((id) => ({ ...base, id })),
+      );
+      if (path !== null) lines.push(`共享文档 id 台账 → ${path}`);
+    }
+    for (const line of lines) ev.observations.push(line);
   }
 
   /**
@@ -412,11 +450,23 @@ export class WpsBotCore {
         const reason = (data as { reason?: { kind?: string } } | undefined)?.reason;
         const kind = reason?.kind;
         const turnNo = typeof data?.turn === "number" ? data.turn : 0;
+        let deferred = false;
         if (kind === "completed") {
           const finalText = this.turnFinalText.get(chatId);
           if (finalText !== undefined && finalText.length > 0) {
             this.turnFinalText.delete(chatId);
-            void this.deliver(chatId, finalText);
+            // B4：交付结果回填卡片真值——收官延后到 deliver 落地（真值到时才可见）
+            deferred = true;
+            void this.deliver(chatId, finalText)
+              .then(() => {
+                this.lastDelivered.add(chatId);
+              })
+              .catch(() => {
+                this.lastFailure.set(chatId, "正式回答发送失败，请查看本条上下消息或重试。");
+              })
+              .finally(() => {
+                void this.finalizeTurn(chatId);
+              });
           } else {
             // G3：completed 空文本原静默——GA 同分支发「无法继续完成」通告
             this.turnFinalText.delete(chatId);
@@ -427,10 +477,11 @@ export class WpsBotCore {
           const noticeReason = reasonForTurnEnd(String(kind));
           if (noticeReason !== null) {
             this.cancelPending(chatId); // M1：turn 死去，死的 pending 不得以幻影走答允
+            this.lastFailure.set(chatId, detailFor(noticeReason));
             void this.notifyInterrupted(chatId, noticeReason, `${chatId}:${turnNo}:${String(kind)}`);
           }
         }
-        void this.finalizeTurn(chatId);
+        if (!deferred) void this.finalizeTurn(chatId);
         break;
       }
       default:
@@ -496,7 +547,7 @@ export class WpsBotCore {
     this.router.forget(chatId);
     this.cancelPending(chatId);
     this.turnFinalText.delete(chatId);
-    await this.cards.finish(chatId);
+    await this.cards.finish(chatId, { delivered: false });
   }
 
   async finalizeTurn(chatId: string): Promise<void> {
@@ -504,7 +555,9 @@ export class WpsBotCore {
     // 注意：turn/end 迈用 phase 可能是 running——drain 拒却不能收，预设 agent/status(idle) 时处理
     const dispatched = await this.router.drain(chatId).catch(() => false);
     if (!dispatched && this.router.queued(chatId) === 0 && !this.router.busy(chatId)) {
-      await this.cards.finish(chatId);
+      const failure = this.lastFailure.get(chatId);
+      this.lastFailure.delete(chatId);
+      await this.cards.finish(chatId, { delivered: this.lastDelivered.delete(chatId), failure });
     }
   }
 
@@ -524,7 +577,7 @@ export class WpsBotCore {
       for (const chatId of [...this.pendings.keys()]) {
         this.cancelPending(chatId);
       }
-      await this.cards.finishAll().catch(() => undefined);
+      await this.cards.finishAll(detailFor("service_stopping")).catch(() => undefined);
     })();
     await Promise.race([work, new Promise((r) => setTimeout(r, deadlineMs))]);
   }

@@ -221,6 +221,13 @@ function cardNode(value: unknown, into: ParsedContent): void {
   for (const key of ["header", "title", "elements", "table", "columns", "rows", "cells", "content", "value", "text"]) {
     if (key in value) cardNode(value[key], into);
   }
+  // protocol.py:223-234 card():i18n_items 多语包（本仓出站信封即此形——读回自己发的卡必读路）
+  const items = value.i18n_items;
+  if (Array.isArray(items)) {
+    for (const item of items) {
+      if (isRecord(item) && isRecord(item.value)) cardNode(item.value, into);
+    }
+  }
 }
 
 export function parseContent(content: unknown): ParsedContent {

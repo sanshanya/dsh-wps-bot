@@ -15,6 +15,10 @@ const DETAIL: Record<InterruptionReason, string> = {
   unavailable: "当前任务无法继续完成。",
 };
 
+export function detailFor(reason: InterruptionReason): string {
+  return DETAIL[reason];
+}
+
 /** GA app.py:430-435 的排版逐字件。 */
 export function interruptionNotice(reason: InterruptionReason, chatId: string): string {
   return (

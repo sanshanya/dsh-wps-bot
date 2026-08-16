@@ -207,3 +207,14 @@ test("defaultFactify：已落盘附件给模型可读路径（GA downloads 语�
   assert.ok(out.includes("附件 p.png → /ws/downloads/d41/01_p.png"));
   assert.ok(!out.includes("未落盘"));
 });
+
+test("R2：factify head 带防幻觉固定行；R5：image 附件带「不得声称看到了图」明示", () => {
+  const text = defaultFactify(ev({ text: "看看" }));
+  assert.ok(text.includes("入群前的历史对你不可见"));
+  assert.ok(text.includes("不要编造"));
+  const withImage = defaultFactify(ev({ attachments: [{ kind: "image", storageKey: "k", name: "a.png", size: 1, mime: "image/png", localPath: "/tmp/x/a.png" }] as never }));
+  assert.ok(withImage.includes("未进入视觉链路"));
+  assert.ok(withImage.includes("不得声称看到了图"));
+  const withFile = defaultFactify(ev({ attachments: [{ kind: "file", storageKey: "k", name: "b.zip", size: 1, mime: "application/zip" }] as never }));
+  assert.ok(!withFile.includes("不得声称看到了图"));
+});

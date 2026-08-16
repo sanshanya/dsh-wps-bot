@@ -230,9 +230,11 @@ test("长任务：initialDelay 后发卡 → 完结按 settle=recall 撤回", as
     await SLEEP(10);
     assert.ok(client.updates.length >= 1);
 
+    // B4 后语义：delivered 完成才 recall；未交付走失败文案 update
     handle.running = false;
-    await core.finalizeTurn("c1");
-    await SLEEP(10);
+    core.handleSessionEvent("sess:c1", { type: "assistant/message", data: { turn: 2, step: 1, message: { content: [{ type: "text", text: "终态" }] } } });
+    core.handleSessionEvent("sess:c1", { type: "turn/end", data: { turn: 2, reason: { kind: "completed" } } });
+    await SLEEP(80); // deliver 链 + 延后 finalize
     assert.equal(client.recalls.length, 1);
     assert.ok(client.recalls[0]!.startsWith("card-"));
   } finally {
@@ -396,8 +398,9 @@ test("quote：只有引用在途进度卡才算 direct；完结后旧卡引证�
     assert.ok(handle.injectLog[0]!.includes("顺便查下"));
 
     handle.running = false;
-    await core.finalizeTurn("c1"); // 完结留卡 recall
-    await SLEEP(5);
+    core.handleSessionEvent("sess:c1", { type: "assistant/message", data: { turn: 1, step: 1, message: { content: [{ type: "text", text: "终态" }] } } });
+    core.handleSessionEvent("sess:c1", { type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } });
+    await SLEEP(80);
     assert.equal(client.recalls.length, 1);
 
     // 已完结：再 quote 这张卡按 GA accepts_progress_reply 不成立（进度卡不在途）→ 静默
@@ -890,4 +893,31 @@ test("审批串行：同 chat 两问不同时飞——第二问进群问队列�
   await Promise.all([p1, p2]); // 120ms 超时依次放行
   const after = questions();
   assert.ok(after >= 1); // 第二问可能已超时回执，但两问曾串行（第一问结束后才发第二问）
+});
+
+test("R4：unparsed/云文档/共享 id 三路落盘 + 路径观察行进 factify（不再静默蒸发）", async (t) => {
+  const rig = makeRig();
+  t.after(async () => { await rig.core.shutdown(); await rig.cleanup(); });
+  const { core, handle } = rig;
+  const e = ev({
+    isPrivate: true, chatType: "p2p", text: "",
+    attachments: [],
+  });
+  e.unparsed.push({ path: "content.card", reason: "unknown card shape", value: { x: 1 } });
+  e.cloudDocLinks.push("https://kdocs.cn/l/abc");
+  e.sharedDocIds.push("file-42");
+  await core.handleIncomingEvent(e);
+  const { readFileSync, existsSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const dir = join(rig.tmpdir, "ws", "evidence");
+  const unparsed = join(dir, "unparsed_content.jsonl");
+  assert.ok(existsSync(unparsed));
+  const line = readFileSync(unparsed, "utf8").trim().split("\n").at(-1)!;
+  assert.ok(line.includes("unknown card shape"));
+  assert.ok(existsSync(join(dir, "cloud_docs.jsonl")));
+  assert.ok(existsSync(join(dir, "shared_doc_ids.jsonl")));
+  // 路径观察行进事实文本（模型可用 file_read 自查）
+  const injected = handle.followupLog.join("\n");
+  assert.ok(injected.includes("未解析节点原文 →"), injected);
+  assert.ok(injected.includes("unparsed_content.jsonl"));
 });

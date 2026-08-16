@@ -47,6 +47,8 @@ docs/references.md       构成依据、SDK/wps-docs 索引与抓取清单
 - 默认**宽松模式**：无 finish_task 时回落交付末条 assistant 文本（模型服从率未知时静默是失败）；`strictFinishContract=true` 才启用「无 finish 不交付+unavailable 通知」。服从率经真机观测后再收紧，收紧须改本文件。
 - 中途问且等答：`dsh-user-questions` waterfall，通道代答，复用审批答允机器（群问/窗/audit），模板与审批不同。
 - persona 注入规则（组合 persona 承担）：默认不臆造群回复；需要中途说话必须 reply；结束必须 finish_task。
+- factify 防幻觉固定行（A3-P0）：每条入站文本 head 带「入群前历史对你不可见；问到就明说，不要编造。」——事实进模型，规则防幻觉。
+- 图像明示降级（A6-P0，在读入透传未放行的 v1 内）：image 附件 factify 附「图片内容未进入视觉链路，仅有文件路径可用；不得声称看到了图」——模型必须明示而非静默。
 
 ## 审批模型
 
@@ -61,17 +63,18 @@ docs/references.md       构成依据、SDK/wps-docs 索引与抓取清单
 - 中断通知三模板（runtime_failure/service_stopping/unavailable，GA 文案对位），幂等，群聊 mention 尽力，不泄异常原文；completed 无文本分支发 unavailable。
 - teardown 序：断入站（stop+closed 闸）→ 取消/排水（含 continuable subagents，P2 欠账）→ pending 取消 → 卡片收口 → dispose，总预算 `shutdownDeadlineSeconds`（默认 10s）。
 - 投递与清理铁律（真机固化）：turn/end 发射序先于 idle——drain 只由 `agent/status(idle)` 触发；dispose 序「core 先、chats 后」；答允幂等（settled guard）；wrap 不闭包捕获句柄，投递前 `ctx.agents.get(id)===agent` 活体校验（P2）。
-- 进度卡：标题「甘小雨」稳定格式（已收到/心跳/轮次/工具），不入 prompt/history；正常收官 recall，失败留完成态；spawn 后获得 `realCardId` 前不可交互卡路由。
+- 进度卡：标题「甘小雨」稳定格式（已收到/心跳/轮次/工具），不入 prompt/history；spawn 后获得 `realCardId` 前不可交互卡路由。收官对位 GA progress.py:148-174 **三分支**：已交付→recall 收口；recall 失败→update「任务已完成。正式回答已发送，但进度消息撤回失败。」；未交付→update 失败文案（默认「任务未完成，服务已停止继续处理。」）。
 
 ## 文件与历史面
 
 - 任务写入隔离：`workspaceRoot/<chatId>/<userId>/<taskId>/{downloads,artifacts,work}`；downloads 键 `sha256(message_id)[:12]/NN_safeName`；artifacts 经 `[[attach:artifacts/FILE]]` 出群。
 - 跨群历史只读：`workspaceRoot/history/<chatId>/{messages.jsonl,files/}`，全任务可读、无群级 gate；读操作写 JSONL 审计（谁/哪个 session/读了什么）。
+- 证据落盘（R4）：不可归一节点、云文档链接、shared_doc_ids 三路由 JSONL 落盘（`unparsed_content.jsonl`/`cloud_docs.jsonl`/`shared_doc_ids.jsonl`，路径随事实进 prompt）——未知节点不再静默蒸发。
 - `search_wps_history({chatId?,userId?,since?,until?,keywords[],limit})` 只读模型工具；模型自取旧证据继续工作。
 
 ## 呈现层（现有契约保留）
 
-Markdown 4500 分段（CRLF 归一/自然段/硬切 UTF-16 代理体守卫/首段 mention 预留额度）；卡片三模式 cardSettle∈{update,keep,recall}（默认 recall）；附件单件失败=观察行不致命；出站 `.jpg` 映射 `image/jpg`（GA 真值）。
+Markdown 4500 分段（CRLF 归一/自然段/硬切 UTF-16 代理体守卫/首段 mention 预留额度）；卡片两模式 cardSettle∈{update,recall}（默认 recall）；附件单件失败=观察行不致命；出站 `.jpg` 映射 `image/jpg`（GA 真值）。
 
 ## 契约×实现偏差与波次（浓缩总账）
 

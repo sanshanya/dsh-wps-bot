@@ -129,8 +129,13 @@ export class ProgressCards {
     if (state.messageId !== null) void this.maybeUpdate(chatId, state);
   }
 
-  /** 完结收口：[仅限 settle=update] 已改成「任务已完成。」——GA 的收口语义；recall 是默认。 */
-  async finish(chatId: string): Promise<void> {
+  /**
+   * 完结收口（B4 三分支对位 ga_wps/progress.py:148-174）：
+   *  delivered=true  → recall 收口；recall 失败 → update「任务已完成。…撤回失败。」
+   *  delivered=false → update 失败文案（默认「任务未完成，服务已停止继续处理。」），不 recall
+   *  settle=update 的旧路并入 delivered=false 同通道（终态 update），delivered=true 仍 recall。
+   */
+  async finish(chatId: string, outcome: { delivered: boolean; failure?: string } = { delivered: true }): Promise<void> {
     if (this.opts.mode === "off") return;
     const state = this.states.get(chatId);
     if (state === undefined) return;
@@ -139,21 +144,31 @@ export class ProgressCards {
     if (state.delayTimer) clearTimeout(state.delayTimer);
     if (state.heartbeatTimer) clearInterval(state.heartbeatTimer);
     if (state.messageId === null) return;
-    try {
+    if (outcome.delivered) {
+      if (state.messageId === "") return;
       if (this.opts.settle === "update") {
-        // 结束态用「任务已完成。」——不再发「已收到，正在处理。」
-        const elapsed = Math.max(0, Math.floor(Date.now() / 1000 - state.startedAt));
-        const final = `任务已完成。（历时 ${elapsed >= 60 ? `${Math.floor(elapsed / 60)} 分钟` : `${elapsed} 秒`}）`;
-        await this.opts.client.updateCard(
-          state.messageId,
-          final,
-          this.opts.title,
-        );
-      } else {
-        await this.opts.client.recallMessage(state.messageId);
+        try {
+          await this.opts.client.updateCard(state.messageId, "任务已完成。", this.opts.title);
+        } catch (error) {
+          this.logger?.warn(`[wps-bot] progress card settle update failed: ${String(error)}`, error);
+        }
+        return;
       }
+      try {
+        await this.opts.client.recallMessage(state.messageId);
+        return;
+      } catch (error) {
+        this.logger?.warn(`[wps-bot] progress card recall failed: ${String(error)}`, error);
+      }
+    }
+    // 未交付或 recall 失败 → update 失败/旁证文案（keep 模式也让失败可见）
+    const text = outcome.delivered
+      ? "任务已完成。\n\n正式回答已发送，但进度消息撤回失败。"
+      : (outcome.failure ?? "任务未完成，服务已停止继续处理。");
+    try {
+      await this.opts.client.updateCard(state.messageId, text, this.opts.title);
     } catch (error) {
-      this.logger?.warn(`[wps-bot] progress card settle failed: ${String(error)}`, error);
+      this.logger?.warn(`[wps-bot] progress card settle update failed: ${String(error)}`, error);
     }
   }
 
@@ -207,9 +222,9 @@ export class ProgressCards {
     }
   }
 
-  /** 进程内全部任务清空（卸载纪律）。 */
-  async finishAll(): Promise<void> {
+  /** 进程内全部任务清空（卸载纪律）；failure 非空=按未交付分支落失败文案。 */
+  async finishAll(failure?: string): Promise<void> {
     const chatIds = [...this.states.keys()];
-    await Promise.allSettled(chatIds.map((chatId) => this.finish(chatId)));
+    await Promise.allSettled(chatIds.map((chatId) => this.finish(chatId, { delivered: false, failure })));
   }
 }

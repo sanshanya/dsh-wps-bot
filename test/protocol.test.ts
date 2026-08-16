@@ -296,3 +296,22 @@ test("mentionMatched：B 通道结构匹配——名与 <at> 分置不误判，�
   assert.equal(structural.matched, true);
   assert.equal(structural.matchedBy, "markup");
 });
+
+test("R4：i18n_items 卡片信封读回——自己出站的卡能读回标题与正文（protocol.py:223-234）", () => {
+  const own = parseContent({
+    card: {
+      config: {},
+      i18n_items: [
+        {
+          key: "zh-CN",
+          value: {
+            header: { title: { tag: "text", text: { type: "plain", content: "甘小雨" } } },
+            elements: [{ text: { tag: "text", text: { type: "markdown", content: "已收到，正在处理。" } } }],
+          },
+        },
+      ],
+    },
+  });
+  assert.ok(own.text.includes("甘小雨"));
+  assert.ok(own.text.includes("已收到，正在处理"));
+});

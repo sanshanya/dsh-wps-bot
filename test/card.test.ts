@@ -109,3 +109,33 @@ test("ProgressCards：mode=off 完全静默", async () => {
   await cards.finish("c3");
   assert.equal(log.sendCard.length, 0);
 });
+
+test("B4-a：recall 失败 → 代为 update「任务已完成…撤回失败」文案（progress.py:162-168 分支）", async () => {
+  const calls: Array<{ kind: string; text?: string }> = [];
+  const fake: CardLikeClient = {
+    async sendCard() { return "card-1"; },
+    async updateCard(_id: string, text: string) { calls.push({ kind: "update", text }); return {}; },
+    async recallMessage() { calls.push({ kind: "recall" }); throw new Error("recall expired"); },
+  };
+  const cards = new ProgressCards({ client: fake, mode: "card", settle: "recall", title: "甘小雨", initialDelayMs: 1, heartbeatMs: 60000 });
+  cards.start("c1");
+  await new Promise((r) => setTimeout(r, 20));
+  await cards.finish("c1", { delivered: true });
+  assert.ok(calls.some((c) => c.kind === "recall"));
+  assert.ok(calls.some((c) => c.kind === "update" && c.text!.includes("任务已完成") && c.text!.includes("撤回失败")));
+});
+
+test("B4-b：未交付完结 → 失败文案 update 且无 recall（progress.py:169-174 分支）", async () => {
+  const calls: Array<{ kind: string; text?: string }> = [];
+  const fake: CardLikeClient = {
+    async sendCard() { return "card-1"; },
+    async updateCard(_id: string, text: string) { calls.push({ kind: "update", text }); return {}; },
+    async recallMessage() { calls.push({ kind: "recall" }); return {}; },
+  };
+  const cards = new ProgressCards({ client: fake, mode: "card", settle: "recall", title: "甘小雨", initialDelayMs: 1, heartbeatMs: 60000 });
+  cards.start("c1");
+  await new Promise((r) => setTimeout(r, 20));
+  await cards.finish("c1", { delivered: false, failure: "处理期间发生运行时异常。" });
+  assert.equal(calls.filter((c) => c.kind === "recall").length, 0);
+  assert.ok(calls.some((c) => c.kind === "update" && c.text!.includes("处理期间发生运行时异常")));
+});
