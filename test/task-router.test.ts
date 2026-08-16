@@ -142,7 +142,12 @@ test("分诊矩阵：dedup 同 event_id 再投递 → duplicate；release 后允
 test("分诊矩阵：P-C quote 语义——注册表/卡钩命中目标任务 → 继承注入；裸历史 id 不算", async () => {
   const d = new EventDedup({ limit: 128 });
   const handle = fakeHandle();
-  const router = new WpsRouter({ dedup: d, ensure: async () => handle });
+  // 卡3 裁：注前 fake quoteLookup（single-source）——代双写热件
+  const regHits = new Map<string, { sessionId: string; chatId: string }>();
+  const router = new WpsRouter({
+    dedup: d, ensure: async () => handle,
+    quoteLookup: { lookup: (id: string) => regHits.get(id) ?? null },
+  });
   await router.handleEvent(ev({ eventId: "b1", isPrivate: true, text: "borne" }));
   // 任务键从任务表取
   const taskKey = [...router.entries()].map(([k]) => k)[0]!;
@@ -151,7 +156,7 @@ test("分诊矩阵：P-C quote 语义——注册表/卡钩命中目标任务 �
   assert.equal(await router.handleEvent(ev({ eventId: "b2", quoteMsgId: "b1" })), "drop");
 
   // 注册表记账：quote→task 交绑（setland 注册表消费的宿主输入面）→ 另一用户引用进场
-  router.registerOutbound(taskKey, ["o-1"]);
+  regHits.set("o-1", { sessionId: taskKey, chatId: "c1" });
   handle.running = true;
   assert.equal(await router.handleEvent(ev({ eventId: "b3", quoteMsgId: "o-1", senderId: "u2", senderName: "李" })), "inject");
   const task = router.getTask(taskKey);

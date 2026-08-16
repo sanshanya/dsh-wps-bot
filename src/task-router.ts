@@ -170,28 +170,12 @@ export class WpsRouter {
 
   private lookupQuote(quoteMsgId: string, eventChatId?: string): TaskState | null {
     const regHit = this.opts.quoteLookup?.lookup(quoteMsgId);
-    if (regHit !== undefined) {
-      if (regHit === null) return null;
-      // A2-1：跨 chat 引用不接——命中 chat 与事件 chat 必须一致
-      if (eventChatId !== undefined && regHit.chatId !== eventChatId) return null;
-      return this.tasks.get(regHit.sessionId) ?? this.reviveTask(regHit.sessionId);
-    }
-    for (const [, task] of this.tasks) {
-      if (task.handle && this.ownedOutIds(task.sessionId)?.has(quoteMsgId)) return task;
-    }
-    return null;
+    if (regHit === null || regHit === undefined) return null;
+    // A2-1：跨 chat 引用不接——命中 chat 与事件 chat 必须一致
+    if (eventChatId !== undefined && regHit.chatId !== eventChatId) return null;
+    return this.tasks.get(regHit.sessionId) ?? this.reviveTask(regHit.sessionId);
   }
 
-  private ownedOutIds(_sessionId: string): Set<string> | null {
-    return this.outboundIds.get(_sessionId) ?? null;
-  }
-  private readonly outboundIds = new Map<string, Set<string>>();
-  registerOutbound(sessionId: string, ids: string[]): void {
-    if (ids.length === 0) return;
-    let set = this.outboundIds.get(sessionId);
-    if (set === undefined) { set = new Set(); this.outboundIds.set(sessionId, set); }
-    for (const id of ids) set.add(id);
-  }
 
   /** 同 owner 的活任务：在跑或队列非空（连续消息同任务——P0-4/P-C 用户定稿「连续@→当前任务下一轮」）。 */
   findOwnRunning(chatId: string, ownerId: string): TaskState | null {
@@ -326,7 +310,6 @@ export class WpsRouter {
   /** A2-9：forget 必须清队——处置后已 record 的排队事件不成孤儿（保守参与者也清） */
   forget(sessionId: string): void {
     this.tasks.delete(sessionId);
-    this.outboundIds.delete(sessionId);
     this.queues.delete(sessionId);
   }
 }
