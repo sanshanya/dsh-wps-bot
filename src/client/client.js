@@ -1,4 +1,4 @@
-window.__ModuleLoader__.load({ id: "wps-bot", factory: (require) => { var module = { exports: {} }; var exports = module.exports;
+window.__ModuleLoader__.load({ id: "dsh-wps-bot", factory: (require) => { var module = { exports: {} }; var exports = module.exports;
 "use strict";
 /**
  * wps-bot 设定页：settings.section——选供应商 / 模型，
