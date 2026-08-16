@@ -21,6 +21,7 @@ import { EvidenceStore } from "./evidence.ts";
 import { QuoteRegistry } from "./quote-registry.ts";
 import { parseTaskKey } from "./task-keys.ts";
 import { HistoryStore } from "./history.ts";
+import { TaskDeliveryService, safeArtifactName } from "./task-delivery.ts";
 import { TaskApprovalService } from "./task-approval.ts";
 import { ACK_APPROVED, ACK_APPROVED_NO_WINDOW, ACK_DECLINED, ACK_TIMEOUT, ackApprovedWindow, allowsWindowForReason, type ReplyEvent } from "./task-approval.ts";
 import { TaskQuestionsService } from "./task-questions.ts";
@@ -56,16 +57,8 @@ export type BotClient = Pick<
 >;
 
 /** GA ga_runtime.py:23：`[[attach:路径]]` 交付标记（模型面约定，人写提示词由组合 persona 承载）。 */
-const ATTACH_MARKER = /\[\[attach:([^\]]+)\]\]/g;
 
 /** GA history.attachment_target 的文件名净化：unicode 字母数字 + . _ -，其余 _，截 160。 */
-function safeArtifactName(name: string): string {
-  return name
-    .split("")
-    .map((ch) => (/^[\p{L}\p{N}]$/u.test(ch) || "._-".includes(ch) ? ch : "_"))
-    .join("")
-    .slice(0, 160);
-}
 
 export { ACK_APPROVED, ACK_APPROVED_NO_WINDOW, ACK_DECLINED, ACK_TIMEOUT, ackApprovedWindow } from "./task-approval.ts";
 
@@ -240,6 +233,13 @@ export class WpsBotCore {
       chatForAgent: opts.chatForAgent,
       logger: opts.logger,
     });
+    this.delivery = new TaskDeliveryService({
+      deliverChunks: this.cfg.deliverChunks,
+      workspaceRoot: this.cfg.workspaceRoot,
+      client: opts.client,
+      logger: opts.logger,
+      registerOutboundIds: (sessionId, chatId, ids) => this.registerOutboundIds(sessionId, chatId, ids),
+    });
   }
 
   /** P0-2/P-C：启动期载入持久注册面——引用继承必须跨重启成立。 */
@@ -286,6 +286,8 @@ export class WpsBotCore {
   }
 
   /** R4：unparsed/cloud_docs/shared_doc_ids 三路 JSONL 落盘；路径经 observations 进 prompt。 */
+  private readonly delivery: TaskDeliveryService;
+
   /** P-D 搜索面（转 HistoryStore）。 */
   searchHistory(chatId: string, query: string, limit?: number) {
     return this.history.search(chatId, query, limit);
@@ -365,38 +367,6 @@ export class WpsBotCore {
   }
 
   /** ga_runtime.py:272-289 [[attach:]]：artifacts 根内现存文件；违规/缺失记 errors；marker 剥离。 */
-  /** 任务工作区根：任务键形态时按 ws/<chat>/<owner>/<task>，旧形态回落全局 ws 根。 */
-  private taskRootOf(sessionIdOrChat: string): string {
-    const parsed = parseTaskKey(sessionIdOrChat);
-    if (parsed === null) return resolve(resolve(this.cfg.workspaceRoot));
-    return resolve(this.cfg.workspaceRoot, parsed.chatId, parsed.ownerId, parsed.taskId);
-  }
-
-  private extractArtifacts(
-    text: string,
-    taskRoot: string,
-  ): { cleaned: string; files: Array<{ marker: string; candidate: string }>; errors: string[] } {
-    const workspaceRoot = taskRoot;
-    const artifactRoot = resolve(workspaceRoot, "artifacts");
-    const files: Array<{ marker: string; candidate: string }> = [];
-    const errors: string[] = [];
-    const seenMarkers = new Set<string>();
-    const seenCandidates = new Set<string>();
-    for (const match of text.matchAll(ATTACH_MARKER)) {
-      const marker = (match[1] ?? "").trim();
-      const candidate = resolve(workspaceRoot, marker);
-      if (candidate !== artifactRoot && !candidate.startsWith(artifactRoot + sep)) {
-        if (!seenMarkers.has(marker)) errors.push(`artifact path is outside the deliverable directory: ${marker}`);
-        seenMarkers.add(marker);
-        continue;
-      }
-      if (seenCandidates.has(candidate)) continue;
-      seenCandidates.add(candidate);
-      files.push({ marker, candidate });
-    }
-    return { cleaned: text.replace(ATTACH_MARKER, "").trim(), files, errors };
-  }
-
   /** session/event 钩子：相位 + 终态回答缓冲 + turn/end 的验收/中断/泄流。
    *  wire 形状按 packages/core/session/src/types.ts:252（turn/end: { turn, reason: TurnEndReason }，kind ∈ completed/aborted/error/blocked/max-tokens）。
    */
@@ -482,39 +452,9 @@ export class WpsBotCore {
   }
 
   /** GA app.py:372-395 交付序：正文→产物逐个 upload→失败逐条 markdown 通告。 */
-  async deliver(chatId: string, text: string): Promise<void> {
-    try {
-      const { cleaned, files, errors } = this.extractArtifacts(text, this.taskRootOf(chatId));
-      const deliveryErrors = [...errors];
-      if (cleaned.length > 0 || files.length === 0) {
-        const ids = await this.client.sendMarkdownSplit(chatId, cleaned, null, this.cfg.deliverChunks);
-        this.registerOutboundIds(chatId, parseTaskKey(chatId)?.chatId ?? chatId, ids);
-      }
-      for (const { marker, candidate } of files) {
-        const name = basename(candidate);
-        // GA ga_runtime.py:281-282：不存在/非常规文件 = missing 措辞（先于任何上传尝试）
-        const info = await stat(candidate).catch(() => null);
-        if (info === null || !info.isFile()) {
-          deliveryErrors.push(`artifact file does not exist: ${marker}`);
-          continue;
-        }
-        try {
-          // 全量出站登记：文件消息 id 也进继承面
-          const uploadSent = await this.client.uploadFile(chatId, name, await readFile(candidate));
-          const uploadIds = (uploadSent as { messageId?: unknown }).messageId;
-          this.registerOutboundIds(chatId, parseTaskKey(chatId)?.chatId ?? chatId, typeof uploadIds === "string" && uploadIds !== "" ? [uploadIds] : []);
-        } catch (error) {
-          deliveryErrors.push(`Artifact delivery failed for ${name}: ${String(error)}`);
-        }
-      }
-      for (const failure of deliveryErrors) {
-        await this.client
-          .sendMarkdownSplit(chatId, failure, null, this.cfg.deliverChunks)
-          .catch((error: unknown) => this.logger.warn("[wps-bot] delivery failure notice failed:", error));
-      }
-    } catch (error) {
-      this.logger.error("[wps-bot] deliver failed:", error);
-    }
+  /** 交付出发（转 TaskDeliveryService）。 */
+  deliver(sessionId: string, text: string): Promise<void> {
+    return this.delivery.deliver(sessionId, text);
   }
 
   /**
