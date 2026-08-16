@@ -65,7 +65,7 @@ export WPS365_SP_ID=...
 npm test
 ```
 
-81 个用例（签名 / 分段 / 同意 / 幂等 / 协议 / 分发 / 卡片 / 宿主无关核心全链路 19 例 + 宿主接线纯函数 + cordis E2E + client 出站 wire 面），全部为纯 `node --test` + 假实现替身，运行不需要 WPS 凭据。协议层带**真机 REST 历史帧 regression fixture**（sp 自答 text/card、image `storage_key`、file.local、`@bot` identity 命中），防止 wire 面解析悄悄漂移。与真实 WPS 租户的真实联通验证属于产品发布通路（roadmap 第 2 项）。
+88 个用例（签名 / 分段 / 同意 / 幂等 / 协议 / 分发 / 卡片 / 宿主无关核心全链路 19 例 + 宿主接线纯函数 + cordis E2E + client 出站 wire 面），全部为纯 `node --test` + 假实现替身，运行不需要 WPS 凭据。协议层带**真机 REST 历史帧 regression fixture**（sp 自答 text/card、image `storage_key`、file.local、`@bot` identity 命中），防止 wire 面解析悄悄漂移。与真实 WPS 租户的真实联通验证属于产品发布通路（roadmap 第 2 项）。
 
 `node --test` 依赖 Node ≥ 22.6 的 type stripping；`npm run typecheck`（`tsc --noEmit` strict）须 0 错。协议解析的权威顺序在 src/protocol.ts 头注：**真机帧 > GA `protocol.py:132-370` > wps-docs 官方文档 > open-event-sdk `.d.ts`**——`.d.ts` 曾在 `content.text` 键型上说错话（真机是对象不是字符串），只当线索不当真值。
 

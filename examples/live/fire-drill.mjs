@@ -102,15 +102,16 @@ console.log('[drill] 注入', eventId, '→', payload.text);
 const route = await core.handleIncomingEvent(payload);
 console.log('[drill] route =', route);
 
-const deadline = Date.now() + waitApproveMs + 60_000;
+const drillStart = Date.now(); // 观测下界=注入时刻（page 升序取头，须自过滤自消息）
+const deadline = drillStart + waitApproveMs + 60_000;
 const seen = { card: false, question: false, answer: false, recalled: false };
 let lastCardId = '';
 while (Date.now() < deadline) {
   await sleep(5_000);
-  const r = await client.getMessages(chatId, 10);
-  for (const m of (r.data ?? {}).items ?? []) {
+  const r = await client.getMessages(chatId, 40);
+  for (const m of ((r.data ?? {}).items ?? []).slice(-20)) {
     if (m.sender?.type !== 'sp') continue;
-    if (Number(m.ctime) < Date.parse('2026-08-16T00:00:00Z')) continue;
+    if (Number(m.ctime) < drillStart - 10_000) continue;
     const t = m?.content?.text;
     const body = typeof t === 'string' ? t : t?.content ?? '';
     if (!seen.card && m.type === 'card') { seen.card = true; lastCardId = String(m.id ?? ''); console.log('[drill] ✓ 进度卡已出现', lastCardId); }
