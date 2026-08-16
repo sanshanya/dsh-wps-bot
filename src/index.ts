@@ -331,17 +331,18 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
 
   void ctx.on("session/event", (session: AgentSessionLike, event: { type: string; data?: unknown }) => {
     if (core === null) return;
-    // 同一性双闸：对象同一直判（dispose/重建同 id 的迟到事件不污染新会话），id 字符串兜底
-    let chatId: string | null = null;
-    if (session !== undefined && session !== null) {
-      for (const [candidate, entry] of chats) {
-        if (entry.handle?.agent?.session !== undefined && entry.handle.agent.session === (session as unknown)) {
-          chatId = candidate;
-          break;
-        }
+    // B-1（r2 封盘实证）：真机里本回调第一参恒== Agent.session（session/index.ts:639
+    // callbackArgs=[this,event]；runtime-types.ts:70），同一性命中后必须传【session.id 字符串】
+    // ——handleSessionEvent 的入参语义是 sessionId；误传 chatId 则 chatForSessionId 恒 null 全吞。
+    // 未命中直接 drop：dispose/重建同 id 的迟到事件不得借 id 字符串兜底污染新会话。
+    if (session === undefined || session === null) return;
+    for (const [, entry] of chats) {
+      const candidate = entry.handle?.agent?.session;
+      if (candidate !== undefined && candidate === (session as unknown)) {
+        core.handleSessionEvent(String(session.id ?? ""), event);
+        return;
       }
     }
-    core.handleSessionEvent(chatId ?? String(session?.id ?? ""), event);
   });
 
   ctx.on(

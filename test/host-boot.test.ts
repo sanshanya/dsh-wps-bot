@@ -230,8 +230,8 @@ if (!can) {
     assert.equal((ivi.listeners.get("approval/request") ?? []).length, 1);
     assert.equal((ivi.listeners.get("approval/request") ?? [])[0]!.prepend, true); // prepend waterfall
 
-    // 2) 中间旁白
-    const sessionRef = { id: "wps-bot:chat-42" };
+    // 2) 中间旁白——fire 真引用（与 handle.agent.session 同一对象；假引用是 E2E-1 漏测根因）
+    const sessionRef = (s1.handle as { agent: { session: unknown } }).agent.session;
     ivi.fire("session/event", sessionRef, {
       type: "assistant/message",
       data: { turn: 1, step: 1, message: { content: [{ type: "text", text: "我先查一下" }] } },
