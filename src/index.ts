@@ -527,7 +527,7 @@ function registerChannelTools(
         schema: {
           type: "object",
           additionalProperties: false,
-          properties: { delivered: { type: "boolean", required: true } },
+          properties: { delivered: { type: "boolean", default: false } },
         },
         render: (_args: unknown, value: unknown) => [{ type: "text", text: JSON.stringify(value) }],
       },
