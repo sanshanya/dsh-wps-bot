@@ -59,6 +59,7 @@ export interface WpsBotConfig {
   auditPath?: string;
   ackInterventionText?: string;
   shutdownDeadlineSeconds?: number;
+  channelQuestionProvider?: boolean;
   deliverChunks?: number;
 }
 
@@ -87,6 +88,8 @@ export const Config: Schema<WpsBotConfig> = Schema.object({
   ackInterventionText: Schema.string().default(ACK_INTERVENTION_TEXT),
   /** shutdown 总预算秒（GA GA_WPS_SHUTDOWN_TIMEOUT_SECONDS:43 对位；r3-γ 裁决 (b) 真配）。 */
   shutdownDeadlineSeconds: Schema.number().default(10),
+  /** 通道代答 user-questions provider 主见位单（默认不抢主；apiproxy 在场时保持 apiproxy）。 */
+  channelQuestionProvider: Schema.boolean().default(false),
   deliverChunks: Schema.number().default(4500),
 });
 
@@ -430,7 +433,7 @@ export function apply(rawCtx: Context, config: WpsBotConfig, deps: BootDeps = {}
     const userQuestions = (ctx as unknown as {
       userQuestions?: { registerProvider?: (p: unknown) => () => void };
     }).userQuestions;
-    if (core !== null && userQuestions?.registerProvider !== undefined) {
+    if (core !== null && config.channelQuestionProvider === true && userQuestions?.registerProvider !== undefined) {
       const owned = core;
       try {
         userQuestions.registerProvider({
