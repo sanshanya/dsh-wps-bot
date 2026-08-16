@@ -42,7 +42,7 @@ export function defaultFactify(ev: WpsEvent): string {
   // A3-P0 防幻觉固定行：入群前历史对模型不可见——事实进模型，规则防编造
   const head =
     `[WPS 任务 | chat ${ev.chatType || "group"}/${ev.chatId} | requester ${ev.senderName}(${ev.senderId})]` +
-    "\n注意：bot 入群前的历史对你不可见；问到就明说，不要编造。";
+    "\n注意：你的直接上下文不含本对话的旧聊天（尤其你入群前的）；要翻历史就调 search_wps_history，不要编造。";
   const parts: string[] = [];
   // GA live-attachments：已落盘附件给模型可读路径（materialize 先于分发并完成注入）
   for (const a of ev.attachments) {
