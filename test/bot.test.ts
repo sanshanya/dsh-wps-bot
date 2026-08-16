@@ -950,6 +950,8 @@ test("P-A：finish_task 登记优先交付；reply 过的 turn 不重复发末�
   await core.handleIncomingEvent(ev({ isPrivate: true, chatType: "p2p" }));
 
   // 1) finish_task 登记物优先（模型末态文本不喧宾）
+  // 新契约（Z2-D）：登记缀当前轮——先发 turn/start，照当前务务轮
+  core.handleSessionEvent("sess:c1", { type: "turn/start", data: { turn: 1 } });
   core.noteFinishTask(rig.lastKey(), "显式交付件");
   core.handleSessionEvent("sess:c1", { type: "assistant/message", data: { turn: 1, step: 1, message: { content: [{ type: "text", text: "思维内噪音" }] } } });
   handle.running = false;

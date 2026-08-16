@@ -147,7 +147,7 @@ export class WpsBotCore {
   }
   private readonly lastDelivered = new Set<string>();
   private readonly lastFailure = new Map<string, string>();
-  private readonly finishDeliverable = new Map<string, string>();
+  private readonly finishDeliverable = new Map<string, { text: string; turn: number }>();
   private readonly repliedTurn = new Map<string, number>();
   private readonly currentTurn = new Map<string, number>();
 
@@ -402,8 +402,10 @@ export class WpsBotCore {
         const turnNo = typeof data?.turn === "number" ? data.turn : 0;
         let deferred = false;
         if (kind === "completed") {
-          const registered = this.finishDeliverable.get(chatId);
-          if (registered !== undefined) this.finishDeliverable.delete(chatId);
+          const registeredRaw = this.finishDeliverable.get(chatId);
+          // Z2-D：finish 按 turn 定界——跨轮不消费、只留下Cleanup
+          const registered = registeredRaw !== undefined && registeredRaw.turn === turnNo ? registeredRaw.text : undefined;
+          if (registeredRaw !== undefined) this.finishDeliverable.delete(chatId);
           const skipFallback = this.repliedTurn.get(chatId) === (this.currentTurn.get(chatId) ?? 0) && this.repliedTurn.has(chatId);
           const finalText = registered ?? (skipFallback ? undefined : this.turnFinalText.get(chatId));
           if (
@@ -438,6 +440,7 @@ export class WpsBotCore {
           }
         } else {
           this.turnFinalText.delete(chatId);
+          this.finishDeliverable.delete(chatId); // Z2-D：非 completed 也清 finish 登记（跨轮伪装不入）
           const noticeReason = reasonForTurnEnd(String(kind));
           if (noticeReason !== null) {
             this.cancelPending(chatId); // M1：turn 死去，死的 pending 不得以幻影走答允
@@ -538,8 +541,9 @@ export class WpsBotCore {
   }
 
   /** finish_task 工具登记终态交付件（turn/end completed 时优先交付；宽松默认仍留回落面）。 */
+  /** Z2-D：finish 按 turn 定界——登记携当前轮；跨轮消费=空账，非 completed 的 turn/end 行清账。 */
   noteFinishTask(chatId: string, text: string): void {
-    this.finishDeliverable.set(chatId, text);
+    this.finishDeliverable.set(chatId, { text, turn: this.currentTurn.get(chatId) ?? 0 });
   }
 
   /** reply 工具即时发群 + 标记本 turn 已答复（末态文本不再重发）。 */

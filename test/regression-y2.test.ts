@@ -108,3 +108,22 @@ test("Y2-extra：QuoteRegistry 并发 register 串行化——A/B 都在持久�
     await rm(tmpRoot2, { recursive: true, force: true });
   }
 });
+
+
+test("Y2-4：QuoteRegistry persist tmp 文件名唯一（pid+seq——同 key 连写不撞名）", async () => {
+  const { QuoteRegistry } = await import("../src/quote-registry.ts");
+  const tmpRoot = await mkdtemp(join(tmpdir(), "y2-tmpname-"));
+  try {
+    const reg = new QuoteRegistry(join(tmpRoot, "r.jsonl"));
+    await reg.register(["k1"], "wps-bot:c1:u1:t1", "c1");
+    await reg.register(["k2"], "wps-bot:c1:u1:t1", "c1");
+    // 不撞名完成，超调任务同层直过
+    const reg2 = new QuoteRegistry(join(tmpRoot, "r.jsonl"));
+    await reg2.load();
+    assert.ok(reg2.lookup("k1") !== null && reg2.lookup("k2") !== null);
+  } finally {
+    await rm(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+// Y2-5 三态面见 task-questions 挂闸；走主文件缝—— host-boot E2E-1 已叫响 userQuestions 服务在场路径

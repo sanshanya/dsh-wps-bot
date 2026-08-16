@@ -195,9 +195,10 @@ export class TaskApprovalService {
     if (allowed.size === 0) allowed.add(requester.userId);
 
     const allowWindow = cfg.allowWindow && allowsWindowForReason(req.reason);
-    if ([...allowed].some((u) => windowAllows(this.windows, sessionId, u, allowWindow))) {
+    // Z2-E：窗归属=requester 本人——participant 的窗不得助放行 owner 的后续（GA 键=requester）
+    if (windowAllows(this.windows, sessionId, requester.userId, allowWindow)) {
       try {
-        const hitUser = [...allowed].find((u) => windowAllows(this.windows, sessionId, u, allowWindow)) ?? requester.userId;
+        const hitUser = requester.userId;
         const entry = autoAllowEntry({
           chatId,
           userId: hitUser,

@@ -5,6 +5,8 @@
  * @module dsh-wps-bot/task-keys
  */
 
+import { createHash } from "node:crypto";
+
 const PREFIX = "wps-bot:";
 
 export function taskKey(chatId: string, ownerId: string, taskId: string): string {
@@ -36,10 +38,10 @@ export function isLegacyKey(key: string): boolean {
   return key.startsWith(PREFIX) && parseTaskKey(key) === null;
 }
 
-/** Y2-3 央束：盘键净化——白名单 [A-Za-z0-9._-]，余者一概「_」；空/纯点键变「_」。
- *  用法：一切落盘路径段必须经此；会话键解析原件不动（运营面不受影响）。 */
+/** Z2-B 央束：盘键净化——白名单 id 径认；非常形 id 用 sha256 前 12 位（撞名零可能，撞收敛周身）；
+ *  用法：一切落盘路径段必须经此；会话键解析原件不动。 */
 export function sanitizePathKey(key: string): string {
-  const out = key.replace(/[^A-Za-z0-9._-]+/g, "_");
-  const cleaned = out.length > 0 && out !== "." && out !== ".." ? out : "_";
-  return cleaned;
+  const trimmed = key.replace(/^\.+|\.+$/g, ""); // 首尾点剥除（接合保障；决不一致性角色）
+  if (/^[A-Za-z0-9._-]+$/.test(trimmed) && trimmed.length > 0 && trimmed !== "..") return trimmed;
+  return `#${createHash("sha256").update(key, "utf8").digest("hex").slice(0, 12)}`;
 }
