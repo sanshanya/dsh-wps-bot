@@ -36,6 +36,10 @@
 - [x] 真机级回归四件固化：loader default/inject、WS 单播律、答允幂等、dispose 序
 - [ ] U1 断网重放窗口 / U2 GUI secret 渲染（发版闸，未测）
 
+## 2026-08-16T06:04Z 复验（B-1 修复后新戳，旧戳保留）
+
+06:04:20 任务→22 卡→24 群问→31 `同意5分钟`→31 单条回执→**33 模型终态回答「已在 C:\Temp\hello2.txt 创建完毕，内容为 done」**（B-1 存活期该件恒缺席）+audit approved:true+hello2.txt 落盘。B-1 病灶（session/event 全吞）闭合；session 路由→交付→卡片收口链路自此具真机证据。
+
 ## 实测中暴露并已修的对接面事故（教训登记）
 
 1. loader `unwrapExports` default 遮蔽 inject（b64ba80→修复）；
